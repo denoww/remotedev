@@ -36,22 +36,22 @@ CHAT_ID = int(os.environ.get("TELEGRAM_DEV_CHAT_ID", "0"))
 PROJETOS = {
     "erp": {
         "nome": "ERP",
-        "path": os.path.expanduser("~/projetos/erp"),
+        "path": os.path.expanduser("~/workspace/erp"),
         "emoji": "🏢",
     },
     "scsip": {
         "nome": "SCSIP",
-        "path": os.path.expanduser("~/projetos/scsip"),
+        "path": os.path.expanduser("~/workspace/scsip"),
         "emoji": "📡",
     },
     "portaria": {
         "nome": "Portaria",
-        "path": os.path.expanduser("~/projetos/portaria"),
+        "path": os.path.expanduser("~/workspace/portaria"),
         "emoji": "🚪",
     },
     "sc_linker": {
         "nome": "SC Linker",
-        "path": os.path.expanduser("~/projetos/sc_linker"),
+        "path": os.path.expanduser("~/workspace/sc_linker"),
         "emoji": "🔗",
     },
 }
