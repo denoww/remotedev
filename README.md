@@ -31,16 +31,15 @@ Para adicionar outro bot, rode `./bot.sh install` novamente com outro nome.
 ## Gerenciar bots
 
 ```bash
-./bot.sh list                          # lista bots instalados
-./bot.sh status                        # status de todos os bots
-./bot.sh restart                       # pergunta qual bot reiniciar
-./bot.sh restart dev_desktop           # reinicia direto
-./bot.sh stop dev_desktop              # para o bot
-./bot.sh start dev_desktop             # inicia o bot
-./bot.sh logs dev_desktop              # logs do serviço
-./bot.sh logs-claude dev_desktop       # logs do Claude
-./bot.sh logs-claude dev_desktop scsip # filtra por projeto
-./bot.sh uninstall                     # lista bots e remove o escolhido
+./bot.sh list                    # lista bots instalados
+./bot.sh status                  # status de todos os bots
+./bot.sh restart                 # reinicia um bot
+./bot.sh stop                    # para um bot
+./bot.sh start                   # inicia um bot
+./bot.sh logs                    # logs do serviço
+./bot.sh logs-claude             # logs do Claude
+./bot.sh logs-claude BOT PROJETO # filtra por projeto
+./bot.sh uninstall               # remove um bot
 ```
 
 Todos os comandos que recebem nome do bot são opcionais — se não passar, ele lista os bots e pergunta qual.
