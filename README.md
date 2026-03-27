@@ -28,24 +28,6 @@ Passo a passo que o script executa:
 
 Para adicionar outro bot, rode `./bot.sh install` novamente com outro nome.
 
-## Registrar comandos no Telegram
-
-Fale com [@BotFather](https://t.me/BotFather), envie `/setcommands`, selecione seu bot e cole:
-
-```
-start - Menu de ajuda
-p - Trocar projeto
-bash - Executar comando no terminal
-claude - Claude Code no projeto
-git - Comandos git
-rails - Rails runner/console
-rake - Rake task
-log - Ultimas linhas do log
-ping - Verifica se desktop esta online
-id - Mostra seu chat_id
-restart - Reinicia o bot
-```
-
 ## Gerenciar bots
 
 ```bash
