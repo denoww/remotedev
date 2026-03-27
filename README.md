@@ -1,4 +1,4 @@
-# remotedev <!-- v4 -->
+# remotedev <!-- v5 -->
 
 Telegram Bot para controle remoto multiprojeto via desktop. Suporta múltiplos bots rodando em paralelo.
 
@@ -22,7 +22,7 @@ O script interativo pede nome, token e descobre o CHAT_ID automaticamente:
 
 ## Comandos disponíveis no Telegram
 
-Vá no bot Telegram e digite `/` para ver os comandos. Eles são registrados automaticamente ao iniciar o bot.
+Vá no Telegram e digite `/start` ou `/` para ver os comandos. Eles são registrados automaticamente ao iniciar o bot.
 
 ## Gerenciar bots (comandos no computador)
 
