@@ -125,6 +125,16 @@ def projeto_label(chat_id: int) -> str:
     cfg = projeto_config(chat_id)
     if not cfg:
         return "⚠️ nenhum projeto"
+    path = cfg["path"]
+    try:
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=path, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except Exception:
+        branch = ""
+    if branch:
+        return f"📁 {cfg['nome']} ({branch})"
     return f"📁 {cfg['nome']}"
 
 
@@ -136,13 +146,11 @@ async def exigir_projeto(update: Update) -> bool:
     # Salvar mensagem original para re-executar após escolha
     if update.message and update.message.text:
         pendente[chat_id] = update.message.text
-    botoes = []
-    for key, cfg in PROJETOS.items():
-        botoes.append(
-            InlineKeyboardButton(f"📁 {cfg['nome']}", callback_data=f"projeto:{key}")
-        )
-    teclado = InlineKeyboardMarkup([botoes[i:i + 2] for i in range(0, len(botoes), 2)])
-    await update.message.reply_text("⚠️ Escolha um projeto primeiro:", reply_markup=teclado)
+    teclado = [
+        [InlineKeyboardButton(cfg['nome'], callback_data=f"projeto:{key}")]
+        for key, cfg in PROJETOS.items()
+    ]
+    await update.message.reply_text("Escolha o projeto:", reply_markup=InlineKeyboardMarkup(teclado))
     return False
 
 
@@ -258,17 +266,14 @@ async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     atual = projeto_ativo(chat_id)
-    botoes = []
+    teclado = []
     for key, cfg in PROJETOS.items():
-        marcador = " ◀" if key == atual else ""
-        botoes.append(
-            InlineKeyboardButton(
-                f"📁 {cfg['nome']}{marcador}",
-                callback_data=f"projeto:{key}",
-            )
-        )
+        marcador = " ✅" if key == atual else ""
+        teclado.append([InlineKeyboardButton(
+            f"{cfg['nome']}{marcador}",
+            callback_data=f"projeto:{key}",
+        )])
 
-    teclado = [botoes[i:i + 2] for i in range(0, len(botoes), 2)]
     await update.message.reply_text(
         "Selecione o projeto:",
         reply_markup=InlineKeyboardMarkup(teclado),
@@ -332,7 +337,7 @@ async def processar_comando(chat_id, texto, msg, context):
         if res["code"] == 0:
             res = rodar(f'git commit -m "{msg_commit}"', cwd=cwd)
             if res["code"] == 0:
-                res = rodar("git push", cwd=cwd, timeout=60)
+                res = git_push(cwd)
                 await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
                 await pos_push(msg, cwd, res)
                 return
@@ -483,6 +488,19 @@ def detectar_eventos(cwd, hash_antes):
         if hash_depois and hash_depois != hash_antes:
             eventos.add("git_pushed")
     return eventos
+
+
+def git_push(cwd, timeout=60):
+    """Faz git push, com fallback para -u origin <branch> se não tiver upstream."""
+    res = rodar("git push", cwd=cwd, timeout=timeout)
+    if res["code"] != 0 and "no upstream branch" in (res["stderr"] or ""):
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        if branch:
+            res = rodar(f"git push -u origin {branch}", cwd=cwd, timeout=timeout)
+    return res
 
 
 def executar_hooks(cwd, eventos):
@@ -747,7 +765,7 @@ async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # git push
-    res = rodar("git push", cwd=cwd, timeout=60)
+    res = git_push(cwd)
     await enviar_resultado(update, res, f"git push ({msg_commit})")
     await pos_push(update, cwd, res)
 
@@ -1071,9 +1089,14 @@ def main():
                 commands.append(BotCommand(cmd.strip(), desc.strip()))
         await application.bot.set_my_commands(commands)
 
+        teclado = [
+            [InlineKeyboardButton(cfg['nome'], callback_data=f"projeto:{key}")]
+            for key, cfg in PROJETOS.items()
+        ]
         await application.bot.send_message(
             chat_id=CHAT_ID,
-            text=f"🟢 {BOT_NOME} iniciado!",
+            text=f"🟢 {BOT_NOME} iniciado!\nEscolha o projeto:",
+            reply_markup=InlineKeyboardMarkup(teclado),
         )
 
     app.post_init = post_init
