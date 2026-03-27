@@ -33,31 +33,24 @@ from telegram.ext import (
 TOKEN = os.environ.get("TELEGRAM_BOT_DEV_TOKEN", "SEU_TOKEN_AQUI")
 CHAT_ID = int(os.environ.get("TELEGRAM_DEV_CHAT_ID", "0"))
 
-PROJETOS = {
-    "erp": {
-        "nome": "ERP",
-        "path": os.path.expanduser("~/workspace/erp"),
-        "emoji": "🏢",
-    },
-    "scsip": {
-        "nome": "SCSIP",
-        "path": os.path.expanduser("~/workspace/scsip"),
-        "emoji": "📡",
-    },
-    "portaria": {
-        "nome": "Portaria",
-        "path": os.path.expanduser("~/workspace/portaria"),
-        "emoji": "🚪",
-    },
-    "sc_linker": {
-        "nome": "SC Linker",
-        "path": os.path.expanduser("~/workspace/sc_linker"),
-        "emoji": "🔗",
-    },
-}
+WORKSPACE = os.path.expanduser("~/workspace")
 
-# Projeto padrão ao iniciar
-PROJETO_PADRAO = "erp"
+def descobrir_projetos(workspace: str) -> dict:
+    """Varre a pasta workspace e retorna todos os diretórios como projetos."""
+    projetos = {}
+    for entry in sorted(os.listdir(workspace)):
+        caminho = os.path.join(workspace, entry)
+        if os.path.isdir(caminho) and not entry.startswith("."):
+            projetos[entry] = {
+                "nome": entry,
+                "path": caminho,
+            }
+    return projetos
+
+PROJETOS = descobrir_projetos(WORKSPACE)
+
+# Projeto padrão ao iniciar (primeiro da lista ou "seucondominio")
+PROJETO_PADRAO = "seucondominio" if "seucondominio" in PROJETOS else next(iter(PROJETOS), None)
 
 DEFAULT_TIMEOUT = 120
 CLAUDE_TIMEOUT = 600
@@ -84,7 +77,7 @@ def projeto_path(chat_id: int) -> str:
 
 def projeto_label(chat_id: int) -> str:
     cfg = projeto_config(chat_id)
-    return f"{cfg['emoji']} {cfg['nome']}"
+    return f"📁 {cfg['nome']}"
 
 
 def autorizado(func):
@@ -207,7 +200,7 @@ async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marcador = " ◀" if key == atual else ""
         botoes.append(
             InlineKeyboardButton(
-                f"{cfg['emoji']} {cfg['nome']}{marcador}",
+                f"📁 {cfg['nome']}{marcador}",
                 callback_data=f"projeto:{key}",
             )
         )
@@ -345,7 +338,7 @@ async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     print("🤖 Bot iniciando...")
-    print(f"📁 Projetos: {', '.join(f'{v["emoji"]} {k} → {v["path"]}' for k, v in PROJETOS.items())}")
+    print(f"📁 Projetos ({len(PROJETOS)}): {", ".join(PROJETOS.keys())}")
     print(f"🔐 Chat ID autorizado: {CHAT_ID}")
 
     import sys
