@@ -303,6 +303,29 @@ async def callback_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"Projeto alterado para {label}")
 
 
+async def callback_branch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    branch = query.data.replace("branch:", "")
+    chat_id = update.effective_chat.id
+    cwd = projeto_path(chat_id)
+    label = projeto_label(chat_id)
+
+    res = rodar(f"git checkout {branch}", cwd=cwd)
+    if res["code"] != 0:
+        erro = res["stderr"] or res["stdout"] or "erro desconhecido"
+        await query.edit_message_text(f"❌ Erro ao trocar para {branch}:\n{erro}")
+        return
+
+    label = projeto_label(chat_id)  # atualizar label com nova branch
+    await query.edit_message_text(f"🔀 {label}")
+
+    res_pull = rodar("git pull", cwd=cwd, timeout=60)
+    if res_pull["code"] == 0 and res_pull["stdout"]:
+        await query.message.reply_text(f"⬇️ {res_pull['stdout']}")
+
+
 async def processar_comando(chat_id, texto, msg, context):
     """Re-processa um comando pendente após seleção de projeto."""
     cwd = projeto_path(chat_id)
@@ -791,10 +814,28 @@ async def cmd_gitbranch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     branch = " ".join(context.args).strip() if context.args else ""
     if not branch:
-        # Sem argumento: mostra branch atual e lista
+        # Sem argumento: mostrar branches como botões
         cwd = projeto_path(update.effective_chat.id)
-        res = rodar("git branch -a", cwd=cwd)
-        await enviar_resultado(update, res, "git branch -a")
+        res = rodar("git branch", cwd=cwd)
+        branches = []
+        atual = ""
+        for line in res["stdout"].split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("* "):
+                atual = line[2:]
+                branches.append(atual)
+            else:
+                branches.append(line)
+        teclado = []
+        for b in branches:
+            marcador = " ✅" if b == atual else ""
+            teclado.append([InlineKeyboardButton(f"{b}{marcador}", callback_data=f"branch:{b}")])
+        await update.message.reply_text(
+            "Selecione a branch:",
+            reply_markup=InlineKeyboardMarkup(teclado),
+        )
         return
 
     cwd = projeto_path(update.effective_chat.id)
@@ -1054,6 +1095,7 @@ def main():
     app.add_handler(CommandHandler("p", cmd_projeto))
     app.add_handler(CommandHandler("projeto", cmd_projeto))
     app.add_handler(CallbackQueryHandler(callback_projeto, pattern=r"^projeto:"))
+    app.add_handler(CallbackQueryHandler(callback_branch, pattern=r"^branch:"))
 
     # Comandos
     app.add_handler(CommandHandler("start", cmd_start))
