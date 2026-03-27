@@ -1,5 +1,6 @@
 import os
 import html
+import shlex
 import asyncio
 import subprocess
 
@@ -174,7 +175,7 @@ async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await enviar_resultado(update, res, "git add -A")
         return
 
-    cmd_commit = f'git commit -m "{msg_commit}"'
+    cmd_commit = f'git commit -m {shlex.quote(msg_commit)}'
     res = rodar(cmd_commit, cwd=cwd)
     if res["code"] != 0:
         if "nothing to commit" in (res["stdout"] + res["stderr"]):

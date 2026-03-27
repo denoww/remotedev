@@ -61,11 +61,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(
         f"🤖 <b>Bot [{BOT_NOME}] ativo!</b>\n"
-        f"Projeto atual: {label}\n\n"
-        "<b>Claude Code:</b>\n"
-        "Envie texto livre, áudio ou foto → vai pro Claude\n"
-        "/new — nova sessão (limpa contexto)\n\n"
-        f"<b>Comandos:</b>\n{comandos_help}",
+        f"Projeto: {label}\n\n"
+        "<b>Claude Code</b>\n"
+        "Texto, áudio ou foto → Claude responde direto\n\n"
+        f"<b>Comandos</b>\n{comandos_help}",
         parse_mode="HTML",
     )
 
@@ -391,7 +390,6 @@ def main():
 
     # Comandos
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("ping_pc", cmd_ping_pc))
     app.add_handler(CommandHandler("bash", cmd_bash))
     app.add_handler(CommandHandler("new", cmd_new_session))

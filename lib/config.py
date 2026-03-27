@@ -37,18 +37,17 @@ PROJETOS = descobrir_projetos(WORKSPACE)
 PROJETO_PADRAO = None
 
 BOTFATHER_COMMANDS = (
-    "start - Menu de ajuda\n"
-    "help - Menu de ajuda\n"
-    "new - Nova sessao Claude (limpa contexto)\n"
-    "stop - Cancela comando em execucao\n"
-    "p - Trocar projeto\n"
-    "bash - Executar comando no terminal\n"
-    "git - Comandos git\n"
-    "gitdiff - Diff com sugestao de commit via IA\n"
-    "gitpush - Add, commit e push automatico\n"
-    "gitbranch - Trocar ou criar branch\n"
-    "gitreset - Descartar todas as alteracoes\n"
-    "ping_pc - Verifica se desktop esta online\n"
+    "start - Exibe este menu\n"
+    "new - Inicia sessao limpa do Claude\n"
+    "stop - Para o comando em andamento\n"
+    "p - Seleciona o projeto ativo\n"
+    "bash - Roda um comando no terminal\n"
+    "git - Abre o painel git\n"
+    "gitdiff - Mostra diff e sugere mensagem de commit\n"
+    "gitpush - Faz add, commit e push de uma vez\n"
+    "gitbranch - Troca ou cria branch\n"
+    "gitreset - Descarta todas as alteracoes locais\n"
+    "ping_pc - Checa se o desktop esta ligado\n"
     "restart_bot - Reinicia o bot"
 )
 
