@@ -273,7 +273,22 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt_escaped = prompt.replace('"', '\\"')
     cmd = f'claude -p "{prompt_escaped}" --dangerously-skip-permissions'
 
-    res = rodar(cmd, cwd=projeto_path(update.effective_chat.id), timeout=CLAUDE_TIMEOUT)
+    cwd = projeto_path(update.effective_chat.id)
+    res = rodar(cmd, cwd=cwd, timeout=CLAUDE_TIMEOUT)
+
+    # Log da execução
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude.log")
+    with open(log_file, "a") as f:
+        f.write(f"\n{'='*60}\n")
+        f.write(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] {label}\n")
+        f.write(f"Projeto: {cwd}\n")
+        f.write(f"Prompt: {prompt}\n")
+        f.write(f"Exit: {res['code']}\n")
+        if res["stdout"]:
+            f.write(f"Saída:\n{res['stdout']}\n")
+        if res["stderr"]:
+            f.write(f"Erro:\n{res['stderr']}\n")
+
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
 
 
