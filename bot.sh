@@ -99,7 +99,7 @@ cmd_install() {
     fi
 
     # Nome do bot
-    read -p "Nome do bot (ex: dev_desktop, dev_notebook, analise_dados, limpeza_de_arquivos): " BOT_NOME
+    read -p "Nome do bot (ex: botdev, botanalise, botlimpeza, botcontrolarpc): " BOT_NOME
     BOT_NOME=$(echo "$BOT_NOME" | tr '[:upper:]' '[:lower:]')
 
     if [ -z "$BOT_NOME" ]; then
@@ -212,9 +212,10 @@ EOF
     echo ""
     echo "   Abra o Telegram e envie /start pro bot."
     echo ""
-    echo "   Logs:        ./bot.sh logs $BOT_NOME"
-    echo "   Reiniciar:   ./bot.sh restart $BOT_NOME"
-    echo "   Desinstalar: ./bot.sh uninstall"
+    echo "   Logs:          ./bot.sh logs $BOT_NOME"
+    echo "   Logs Claude:   ./bot.sh logs-claude $BOT_NOME"
+    echo "   Reiniciar:     ./bot.sh restart $BOT_NOME"
+    echo "   Desinstalar:   ./bot.sh uninstall"
     echo "═══════════════════════════════════════════"
 }
 
@@ -230,8 +231,8 @@ cmd_uninstall() {
         exit 0
     fi
 
-    systemctl --user stop "$SERVICE_NAME" 2>/dev/null
-    systemctl --user disable "$SERVICE_NAME" 2>/dev/null
+    systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+    systemctl --user disable "$SERVICE_NAME" 2>/dev/null || true
     rm -f "$SERVICE_DIR/$SERVICE_NAME.service"
     rm -f "$SERVICE_DIR/$SERVICE_NAME.env"
     rm -f "$BOTS_DIR/$BOT_NOME.conf"
