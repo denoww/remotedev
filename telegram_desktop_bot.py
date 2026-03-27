@@ -18,6 +18,7 @@ import os
 import sys
 import subprocess
 import html
+import json as json_mod
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -69,7 +70,7 @@ def descobrir_projetos(workspace: str) -> dict:
 
 PROJETOS = descobrir_projetos(WORKSPACE)
 
-PROJETO_PADRAO = "seucondominio" if "seucondominio" in PROJETOS else next(iter(PROJETOS), None)
+PROJETO_PADRAO = None
 
 DEFAULT_TIMEOUT = 120
 CLAUDE_TIMEOUT = 600
@@ -80,22 +81,42 @@ estado = {}
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════
 
-def projeto_ativo(chat_id: int) -> str:
+def projeto_ativo(chat_id: int):
     return estado.get(chat_id, PROJETO_PADRAO)
 
 
-def projeto_config(chat_id: int) -> dict:
+def projeto_config(chat_id: int):
     key = projeto_ativo(chat_id)
+    if key is None or key not in PROJETOS:
+        return None
     return PROJETOS[key]
 
 
-def projeto_path(chat_id: int) -> str:
-    return projeto_config(chat_id)["path"]
+def projeto_path(chat_id: int):
+    cfg = projeto_config(chat_id)
+    return cfg["path"] if cfg else None
 
 
 def projeto_label(chat_id: int) -> str:
     cfg = projeto_config(chat_id)
+    if not cfg:
+        return "⚠️ nenhum projeto"
     return f"📁 {cfg['nome']}"
+
+
+async def exigir_projeto(update: Update) -> bool:
+    """Retorna True se tem projeto selecionado. Se não, pede para escolher."""
+    chat_id = update.effective_chat.id
+    if projeto_config(chat_id) is not None:
+        return True
+    botoes = []
+    for key, cfg in PROJETOS.items():
+        botoes.append(
+            InlineKeyboardButton(f"📁 {cfg['nome']}", callback_data=f"projeto:{key}")
+        )
+    teclado = InlineKeyboardMarkup([botoes[i:i + 2] for i in range(0, len(botoes), 2)])
+    await update.message.reply_text("⚠️ Escolha um projeto primeiro:", reply_markup=teclado)
+    return False
 
 
 def autorizado(func):
@@ -272,6 +293,9 @@ async def cmd_bash(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /bash <comando>")
         return
 
+    if not await exigir_projeto(update):
+        return
+
     await update.message.reply_text("⏳ Executando...")
     res = rodar(cmd, cwd=projeto_path(update.effective_chat.id))
     await enviar_resultado(update, res, cmd)
@@ -280,9 +304,36 @@ async def cmd_bash(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Sessões do Claude por projeto (para /cc continuar conversa)
 claude_sessions = {}
 
+def carregar_hooks(cwd):
+    """Carrega hooks do .remotedev.json do projeto."""
+    config_path = os.path.join(cwd, ".remotedev.json")
+    if not os.path.exists(config_path):
+        return []
+    try:
+        with open(config_path) as f:
+            data = json_mod.load(f)
+        return data.get("hooks", [])
+    except (json_mod.JSONDecodeError, OSError):
+        return []
+
+
+def executar_hooks(cwd, saida_bruta):
+    """Verifica hooks do projeto e executa os que casam com a saída do Claude."""
+    hooks = carregar_hooks(cwd)
+    resultados = []
+    for hook in hooks:
+        match = hook.get("match", "")
+        if match and match in saida_bruta:
+            run_cmd = hook.get("run", "")
+            msg = hook.get("msg", f"Hook executado: {run_cmd}")
+            if run_cmd:
+                rodar(run_cmd, cwd=cwd, timeout=30)
+                resultados.append(msg)
+    return resultados
+
+
 def rodar_claude(prompt_escaped, cwd, session_id=None):
     """Roda o Claude e retorna (res, texto_resposta, session_id)."""
-    import json as json_mod
 
     flags = '--dangerously-skip-permissions --output-format json'
     if session_id:
@@ -291,6 +342,9 @@ def rodar_claude(prompt_escaped, cwd, session_id=None):
         cmd = f'claude -p "{prompt_escaped}" {flags}'
 
     res = rodar(cmd, cwd=cwd, timeout=CLAUDE_TIMEOUT)
+
+    # Guardar saída bruta para verificação de hooks
+    res["_raw"] = res["stdout"]
 
     texto_resposta = ""
     novo_session_id = None
@@ -336,6 +390,9 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /c <prompt>\nUso: /cc <prompt> — continua última conversa")
         return
 
+    if not await exigir_projeto(update):
+        return
+
     label = projeto_label(update.effective_chat.id)
     cwd = projeto_path(update.effective_chat.id)
     await update.message.reply_text(f"🧠 Claude pensando... [{label}]")
@@ -352,12 +409,20 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res["stdout"] = texto_resposta
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
 
+    # Executar hooks pós-Claude
+    hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+    for msg in hooks_msgs:
+        await update.message.reply_text(msg)
+
 
 @autorizado
 async def cmd_claude_continue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args) if context.args else ""
     if not prompt:
         await update.message.reply_text("Uso: /cc <prompt> — continua última conversa")
+        return
+
+    if not await exigir_projeto(update):
         return
 
     label = projeto_label(update.effective_chat.id)
@@ -381,9 +446,17 @@ async def cmd_claude_continue(update: Update, context: ContextTypes.DEFAULT_TYPE
     res["stdout"] = texto_resposta
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
 
+    # Executar hooks pós-Claude
+    hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+    for msg in hooks_msgs:
+        await update.message.reply_text(msg)
+
 
 @autorizado
 async def cmd_git(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await exigir_projeto(update):
+        return
+
     args = " ".join(context.args) if context.args else "status"
     cmd = f"git {args}"
 
@@ -399,6 +472,9 @@ async def cmd_rails(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /rails runner 'Codigo' ou /rails db:migrate")
         return
 
+    if not await exigir_projeto(update):
+        return
+
     cmd = f"bundle exec rails {args}"
     await update.message.reply_text(f"⏳ rails {args}...")
     res = rodar(cmd, cwd=projeto_path(update.effective_chat.id))
@@ -412,6 +488,9 @@ async def cmd_rake(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Uso: /rake <task>")
         return
 
+    if not await exigir_projeto(update):
+        return
+
     cmd = f"bundle exec rake {args}"
     await update.message.reply_text(f"⏳ rake {args}...")
     res = rodar(cmd, cwd=projeto_path(update.effective_chat.id))
@@ -420,6 +499,9 @@ async def cmd_rake(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await exigir_projeto(update):
+        return
+
     linhas = context.args[0] if context.args else "50"
     cmd = f"tail -n {linhas} log/development.log"
 
@@ -440,6 +522,9 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text.strip()
     if not texto:
+        return
+
+    if not await exigir_projeto(update):
         return
 
     await update.message.reply_text("⏳ Executando...")
