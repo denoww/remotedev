@@ -348,14 +348,13 @@ def main():
     print(f"📁 Projetos: {', '.join(f'{v["emoji"]} {k} → {v["path"]}' for k, v in PROJETOS.items())}")
     print(f"🔐 Chat ID autorizado: {CHAT_ID}")
 
-    if TOKEN == "SEU_TOKEN_AQUI" or CHAT_ID == 0:
-        print("\n⚠️  Configure TOKEN e CHAT_ID!")
-        print("   1. Fale com @BotFather → /newbot → copie o token")
-        print("   2. Rode: python3 telegram_desktop_bot.py --get-chat-id")
-        return
-
     import sys
     if "--get-chat-id" in sys.argv:
+        if TOKEN == "SEU_TOKEN_AQUI":
+            print("\n⚠️  Configure TELEGRAM_BOT_DEV_TOKEN primeiro!")
+            print("   Veja o README para instruções.")
+            return
+
         print("\n📱 Mande qualquer mensagem pro bot no Telegram...")
 
         async def mostrar_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,6 +365,12 @@ def main():
         app = Application.builder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.ALL, mostrar_id))
         app.run_polling()
+        return
+
+    if TOKEN == "SEU_TOKEN_AQUI" or CHAT_ID == 0:
+        print("\n⚠️  Configure TOKEN e CHAT_ID!")
+        print("   1. Fale com @BotFather → /newbot → copie o token")
+        print("   2. Rode: python3 telegram_desktop_bot.py --get-chat-id")
         return
 
     app = Application.builder().token(TOKEN).build()
