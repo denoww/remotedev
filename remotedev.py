@@ -4,10 +4,10 @@ Telegram Bot — Controle remoto multiprojeto.
 Suporta múltiplas instâncias (bots) rodando em paralelo.
 
 Uso:
-  python3 telegram_desktop_bot.py <nome_bot>
-  python3 telegram_desktop_bot.py dev
-  python3 telegram_desktop_bot.py prod
-  python3 telegram_desktop_bot.py dev --get-chat-id
+  python3 remotedev.py <nome_bot>
+  python3 remotedev.py dev
+  python3 remotedev.py prod
+  python3 remotedev.py dev --get-chat-id
 
 Variáveis de ambiente por bot:
   TELEGRAM_BOT_<NOME>_TOKEN   — token do BotFather
@@ -38,9 +38,9 @@ def carregar_config():
     """Carrega config baseado no nome do bot passado como argumento."""
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
-        print("Uso: python3 telegram_desktop_bot.py <nome_bot>")
-        print("  Ex: python3 telegram_desktop_bot.py dev")
-        print("  Ex: python3 telegram_desktop_bot.py prod")
+        print("Uso: python3 remotedev.py <nome_bot>")
+        print("  Ex: python3 remotedev.py dev")
+        print("  Ex: python3 remotedev.py prod")
         sys.exit(1)
 
     nome = args[0].lower()
