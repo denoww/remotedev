@@ -76,6 +76,7 @@ DEFAULT_TIMEOUT = 120
 CLAUDE_TIMEOUT = 600
 
 estado = {}
+pendente = {}  # chat_id → mensagem original (Update) pendente após escolha de projeto
 
 # ══════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -105,10 +106,13 @@ def projeto_label(chat_id: int) -> str:
 
 
 async def exigir_projeto(update: Update) -> bool:
-    """Retorna True se tem projeto selecionado. Se não, pede para escolher."""
+    """Retorna True se tem projeto selecionado. Se não, pede para escolher e salva comando pendente."""
     chat_id = update.effective_chat.id
     if projeto_config(chat_id) is not None:
         return True
+    # Salvar mensagem original para re-executar após escolha
+    if update.message and update.message.text:
+        pendente[chat_id] = update.message.text
     botoes = []
     for key, cfg in PROJETOS.items():
         botoes.append(
@@ -264,7 +268,77 @@ async def callback_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     estado[chat_id] = key
     label = projeto_label(chat_id)
-    await query.edit_message_text(f"Projeto alterado para {label}")
+
+    # Verificar se há comando pendente
+    cmd_pendente = pendente.pop(chat_id, None)
+    if cmd_pendente:
+        await query.edit_message_text(f"Projeto: {label}\n⏳ Retomando: {cmd_pendente}")
+        # Re-processar o comando pendente
+        await processar_comando(chat_id, cmd_pendente, query.message, context)
+    else:
+        await query.edit_message_text(f"Projeto alterado para {label}")
+
+
+async def processar_comando(chat_id, texto, msg, context):
+    """Re-processa um comando pendente após seleção de projeto."""
+    cwd = projeto_path(chat_id)
+    label = projeto_label(chat_id)
+
+    if texto.startswith("/c ") or texto.startswith("/claude "):
+        # Extrair prompt
+        prompt = texto.split(" ", 1)[1] if " " in texto else ""
+        if not prompt:
+            return
+        await msg.reply_text(f"🧠 Claude pensando... [{label}]")
+        prompt_escaped = prompt.replace('"', '\\"')
+        res, texto_resposta, session_id = rodar_claude(prompt_escaped, cwd)
+        if session_id:
+            claude_sessions[cwd] = session_id
+        logar_claude(label, cwd, prompt, res, texto_resposta)
+        res["stdout"] = texto_resposta
+        await msg.reply_text(texto_resposta or "(sem resposta)")
+        hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+        for h in hooks_msgs:
+            await msg.reply_text(h)
+
+    elif texto.startswith("/cc "):
+        prompt = texto.split(" ", 1)[1] if " " in texto else ""
+        if not prompt:
+            return
+        session_id = claude_sessions.get(cwd)
+        if not session_id:
+            await msg.reply_text(f"⚠️ Nenhuma conversa anterior em [{label}]. Use /c primeiro.")
+            return
+        await msg.reply_text(f"🧠 Claude continuando... [{label}]")
+        prompt_escaped = prompt.replace('"', '\\"')
+        res, texto_resposta, novo_session_id = rodar_claude(prompt_escaped, cwd, session_id)
+        if novo_session_id:
+            claude_sessions[cwd] = novo_session_id
+        logar_claude(label, cwd, f"(continuação) {prompt}", res, texto_resposta)
+        res["stdout"] = texto_resposta
+        await msg.reply_text(texto_resposta or "(sem resposta)")
+        hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+        for h in hooks_msgs:
+            await msg.reply_text(h)
+
+    elif texto.startswith("/bash "):
+        cmd = texto.split(" ", 1)[1]
+        await msg.reply_text("⏳ Executando...")
+        res = rodar(cmd, cwd=cwd)
+        await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
+
+    elif texto.startswith("/git"):
+        args = texto.split(" ", 1)[1] if " " in texto else "status"
+        cmd = f"git {args}"
+        await msg.reply_text(f"⏳ git {args}...")
+        res = rodar(cmd, cwd=cwd)
+        await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
+
+    else:
+        # Mensagem livre → bash
+        await msg.reply_text("⏳ Executando...")
+        res = rodar(texto, cwd=cwd)
+        await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
 
 
 # ══════════════════════════════════════════════════════════════════════
