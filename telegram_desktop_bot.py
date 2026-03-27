@@ -354,6 +354,24 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
             atividade_texto = atividade_texto[:3000] + "\n... (truncado)"
         await update.message.reply_text(f"🔍 Atividade:\n\n{atividade_texto}")
 
+    # Executar hooks do projeto (se houver)
+    hooks_file = os.path.join(cwd, ".remotedev.json")
+    if os.path.isfile(hooks_file):
+        try:
+            with open(hooks_file) as hf:
+                hooks_config = json_mod.load(hf)
+            atividade_texto_lower = " ".join(atividade).lower()
+            for hook in hooks_config.get("hooks", []):
+                match = hook.get("match", "")
+                if match and match.lower() in atividade_texto_lower:
+                    hook_cmd = hook.get("run", "")
+                    hook_msg = hook.get("msg", f"⚡ Hook: {hook_cmd}")
+                    if hook_cmd:
+                        subprocess.Popen(hook_cmd, shell=True, cwd=cwd)
+                        await update.message.reply_text(hook_msg)
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Erro no hook: {e}")
+
     # Enviar resposta pro Telegram
     res["stdout"] = texto_resposta
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
