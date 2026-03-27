@@ -2,6 +2,12 @@
 
 Telegram Bot para controle remoto multiprojeto via desktop.
 
+## Instalação
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Setup
 
 1. Fale com [@BotFather](https://t.me/BotFather) no Telegram → `/newbot` → copie o TOKEN
@@ -11,12 +17,6 @@ Telegram Bot para controle remoto multiprojeto via desktop.
    ```
 3. Configure `TOKEN` e `CHAT_ID` via variáveis de ambiente ou direto no script
 4. Configure seus projetos no dict `PROJETOS`
-
-## Instalação
-
-```bash
-pip install -r requirements.txt
-```
 
 ## Uso
 
