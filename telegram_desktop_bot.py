@@ -480,6 +480,13 @@ def main():
     # Mensagem livre → bash
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_livre))
 
+    async def post_init(application):
+        await application.bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"🟢 Bot [{BOT_NOME}] iniciado!\n📁 Projetos: {', '.join(PROJETOS.keys())}",
+        )
+
+    app.post_init = post_init
     print("✅ Bot rodando! Ctrl+C pra parar.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
