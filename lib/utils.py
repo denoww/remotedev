@@ -13,6 +13,7 @@ from lib.config import (
 estado = {}
 pendente = {}  # chat_id → mensagem original pendente após escolha de projeto
 push_pendente = {}  # chat_id → {cwd, msg_commit} aguardando confirmação
+reset_pendente = {}  # chat_id → {cwd, label} aguardando confirmação
 
 
 def projeto_ativo(chat_id: int):
@@ -29,6 +30,21 @@ def projeto_config(chat_id: int):
 def projeto_path(chat_id: int):
     cfg = projeto_config(chat_id)
     return cfg["path"] if cfg else None
+
+
+def resumo_git(cwd: str) -> str:
+    """Retorna resumo curto do estado git do projeto, ou string vazia se limpo."""
+    res = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=cwd, capture_output=True, text=True, timeout=5,
+    )
+    linhas = res.stdout.strip()
+    if not linhas:
+        return ""
+    lista = linhas.split("\n")
+    if len(lista) > 15:
+        lista = lista[:15] + [f"… e mais {len(lista) - 15} arquivo(s)"]
+    return "\n".join(lista)
 
 
 def projeto_label(chat_id: int) -> str:

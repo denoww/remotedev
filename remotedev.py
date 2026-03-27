@@ -32,7 +32,7 @@ from lib.config import (
 )
 from lib.utils import (
     estado, pendente, push_pendente,
-    projeto_ativo, projeto_config, projeto_path, projeto_label,
+    projeto_ativo, projeto_config, projeto_path, projeto_label, resumo_git,
     exigir_projeto, autorizado, rodar, enviar_resultado,
 )
 from lib.claude import (
@@ -41,7 +41,7 @@ from lib.claude import (
 )
 from lib.git_ops import (
     cmd_diff, cmd_push, cmd_gitbranch, cmd_gitreset,
-    callback_branch, callback_push, _enviar_diff, _gerar_commit_ia, git_push,
+    callback_branch, callback_push, callback_reset, _enviar_diff, _gerar_commit_ia, git_push,
 )
 from lib.hooks import pos_push
 
@@ -79,7 +79,11 @@ async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if key in PROJETOS:
             estado[chat_id] = key
             label = projeto_label(chat_id)
-            await update.message.reply_text(f"Projeto alterado para {label}")
+            status = resumo_git(projeto_path(chat_id))
+            texto = f"Projeto alterado para {label}"
+            if status:
+                texto += f"\n\n📝 Alterações pendentes:\n<pre>{html.escape(status)}</pre>"
+            await update.message.reply_text(texto, parse_mode="HTML")
         else:
             nomes = ", ".join(PROJETOS.keys())
             await update.message.reply_text(f"Projeto não encontrado. Opções: {nomes}")
@@ -118,7 +122,11 @@ async def callback_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"Projeto: {label}\n⏳ Retomando: {cmd_pendente}")
         await processar_comando(chat_id, cmd_pendente, query.message, context)
     else:
-        await query.edit_message_text(f"Projeto alterado para {label}")
+        status = resumo_git(projeto_path(chat_id))
+        texto = f"Projeto alterado para {label}"
+        if status:
+            texto += f"\n\n📝 Alterações pendentes:\n<pre>{html.escape(status)}</pre>"
+        await query.edit_message_text(texto, parse_mode="HTML")
 
 
 async def processar_comando(chat_id, texto, msg, context):
@@ -476,6 +484,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_projeto, pattern=r"^projeto:"))
     app.add_handler(CallbackQueryHandler(callback_branch, pattern=r"^branch:"))
     app.add_handler(CallbackQueryHandler(callback_push, pattern=r"^push:"))
+    app.add_handler(CallbackQueryHandler(callback_reset, pattern=r"^reset:"))
 
     # Comandos
     app.add_handler(CommandHandler("start", cmd_start))

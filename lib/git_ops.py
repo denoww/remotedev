@@ -5,7 +5,7 @@ import asyncio
 import subprocess
 
 from lib.config import MAX_DIFF
-from lib.utils import rodar, projeto_path, projeto_label, enviar_resultado, exigir_projeto, autorizado, push_pendente
+from lib.utils import rodar, projeto_path, projeto_label, enviar_resultado, exigir_projeto, autorizado, push_pendente, reset_pendente
 from lib.hooks import pos_push
 from lib.claude import rodar_claude
 
@@ -284,16 +284,56 @@ async def cmd_gitbranch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_gitreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Limpa todas as alterações pendentes."""
+    """Mostra status e pede confirmação antes de descartar alterações."""
     if not await exigir_projeto(update):
         return
 
-    cwd = projeto_path(update.effective_chat.id)
-    label = projeto_label(update.effective_chat.id)
+    chat_id = update.effective_chat.id
+    cwd = projeto_path(chat_id)
+    label = projeto_label(chat_id)
 
+    status = rodar("git status --short", cwd=cwd)
+    if not status["stdout"]:
+        await update.message.reply_text("⚠️ Nenhuma alteração para descartar.")
+        return
+
+    reset_pendente[chat_id] = {"cwd": cwd, "label": label}
+    teclado = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar Reset", callback_data="reset:sim"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="reset:nao"),
+        ]
+    ])
+    await update.message.reply_text(
+        f"⚠️ <b>Alterações que serão descartadas:</b>\n<pre>{html.escape(status['stdout'])}</pre>\n\nConfirma o reset?",
+        parse_mode="HTML",
+        reply_markup=teclado,
+    )
+
+
+@autorizado
+async def callback_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Executa ou cancela o reset pendente."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = update.effective_chat.id
+    acao = query.data.replace("reset:", "")
+
+    dados = reset_pendente.pop(chat_id, None)
+    if not dados:
+        await query.edit_message_text("⚠️ Nenhum reset pendente.")
+        return
+
+    if acao != "sim":
+        await query.edit_message_text("❌ Reset cancelado.")
+        return
+
+    cwd = dados["cwd"]
+    label = dados["label"]
     rodar("git checkout .", cwd=cwd)
     rodar("git clean -fd", cwd=cwd)
-    await update.message.reply_text(f"🗑️ Todas as alterações descartadas! [{label}]")
+    await query.edit_message_text(f"🗑️ Todas as alterações descartadas! [{label}]")
 
 
 async def callback_branch(update: Update, context: ContextTypes.DEFAULT_TYPE):
