@@ -234,21 +234,7 @@ EOF
     echo ""
     echo "   Abra o Telegram e envie /start pro bot."
     echo ""
-    BOT_USERNAME=$(curl -s "https://api.telegram.org/bot${!TOKEN_VAR}/getMe" | python3 -c "import sys,json; print('@'+json.load(sys.stdin)['result']['username'])" 2>/dev/null || echo "seu bot")
-    echo "── Registrar comandos no Telegram ──"
-    echo ""
-    echo "   1. Abra @BotFather no Telegram"
-    echo ""
-    echo "   2. Envie:"
-    echo "      /setcommands"
-    echo ""
-    echo "   3. Digite ou Selecione:"
-    echo "      $BOT_USERNAME"
-    echo ""
-    echo "   4. Cole tudo abaixo:"
-    echo "   ─────────────────────────────────"
-    sed -n '/^BOTFATHER_COMMANDS/,/^)/p' "$BOT_DIR/remotedev.py" | grep -oP '"\K[^"]+' | grep ' - ' | sed 's/\\n$//'
-    echo "   ─────────────────────────────────"
+    echo "   Comandos do Telegram são registrados automaticamente ao iniciar."
     echo ""
     echo "── Gerenciar ──"
     echo "   Logs:          ./bot.sh logs $BOT_NOME"
@@ -359,15 +345,15 @@ cmd_start() {
 
 cmd_poll() {
     local action="${1:-status}"
-    local poll_script="$BOT_DIR/poll-and-restart.sh"
-    local poll_log="$BOT_DIR/poll.log"
+    local poll_script="$BOT_DIR/gitpull-and-restart.sh"
+    local poll_log="$BOT_DIR/gitpull.log"
     case "$action" in
         on)
-            (crontab -l 2>/dev/null | grep -v poll-and-restart; echo "*/2 * * * * $poll_script") | crontab -
+            (crontab -l 2>/dev/null | grep -v gitpull-and-restart; echo "*/2 * * * * $poll_script") | crontab -
             echo "✅ Polling ativado (a cada 2 min)"
             ;;
         off)
-            crontab -l 2>/dev/null | grep -v poll-and-restart | crontab -
+            crontab -l 2>/dev/null | grep -v gitpull-and-restart | crontab -
             echo "🔴 Polling desativado"
             ;;
         log)
@@ -378,7 +364,7 @@ cmd_poll() {
             fi
             ;;
         status|*)
-            if crontab -l 2>/dev/null | grep -q poll-and-restart; then
+            if crontab -l 2>/dev/null | grep -q gitpull-and-restart; then
                 echo "🟢 Polling ativo (a cada 2 min)"
             else
                 echo "🔴 Polling inativo"

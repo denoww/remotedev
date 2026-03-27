@@ -78,15 +78,16 @@ BOTFATHER_COMMANDS = (
     "start - Menu de ajuda\n"
     "help - Menu de ajuda\n"
     "new - Nova sessao Claude (limpa contexto)\n"
+    "stop - Cancela comando em execucao\n"
     "p - Trocar projeto\n"
-    "diff - Ver alteracoes pendentes\n"
-    "diffia - Gerar mensagem de commit com IA\n"
     "bash - Executar comando no terminal\n"
     "git - Comandos git\n"
+    "gitdiff - Ver alteracoes pendentes\n"
+    "gitdiffia - Gerar mensagem de commit com IA\n"
     "gitpush - Add, commit e push automatico\n"
+    "gitreset - Descartar todas as alteracoes\n"
     "ping_pc - Verifica se desktop esta online\n"
     "meu_chat_id - Mostra seu chat_id\n"
-    "setcommands - Instrucoes pro BotFather\n"
     "restart_bot - Reinicia o bot"
 )
 
@@ -95,6 +96,7 @@ CLAUDE_TIMEOUT = 600
 
 estado = {}
 pendente = {}  # chat_id → mensagem original (Update) pendente após escolha de projeto
+claude_processos = {}  # cwd → subprocess.Popen do Claude em execução
 
 # ══════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -328,10 +330,7 @@ async def processar_comando(chat_id, texto, msg, context):
                 return
         await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
 
-    elif texto.startswith("/diffia"):
-        pass  # tratado pelo CommandHandler
-
-    elif texto.startswith("/diff"):
+    elif texto.startswith("/gitdiff"):
         await _enviar_diff(msg, cwd, label)
 
     elif texto.startswith("/git"):
@@ -485,7 +484,32 @@ def rodar_claude(prompt_escaped, cwd, session_id=None):
     else:
         cmd = f'claude -p "{prompt_escaped}" {flags}'
 
-    res = rodar(cmd, cwd=cwd, timeout=CLAUDE_TIMEOUT)
+    # Usar Popen para poder cancelar via /stop
+    try:
+        proc = subprocess.Popen(
+            cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=cwd, text=True, env={**os.environ, "TERM": "dumb"},
+        )
+        claude_processos[cwd] = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=CLAUDE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        finally:
+            claude_processos.pop(cwd, None)
+
+        stdout = stdout.strip()
+        stderr = stderr.strip()
+        truncated = False
+        MAX = 3800
+        if len(stdout) > MAX:
+            stdout = stdout[:MAX] + "\n\n… (truncado)"
+            truncated = True
+        res = {"stdout": stdout, "stderr": stderr, "code": proc.returncode, "truncated": truncated}
+    except Exception as e:
+        claude_processos.pop(cwd, None)
+        res = {"stdout": "", "stderr": str(e), "code": -1, "truncated": False}
 
     # Guardar saída bruta para verificação de hooks
     res["_raw"] = res["stdout"]
@@ -550,6 +574,37 @@ async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label = projeto_label(update.effective_chat.id)
     claude_sessions.pop(cwd, None)
     await update.message.reply_text(f"✅ Nova sessão iniciada! [{label}]")
+
+
+@autorizado
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await exigir_projeto(update):
+        return
+
+    cwd = projeto_path(update.effective_chat.id)
+    label = projeto_label(update.effective_chat.id)
+    proc = claude_processos.get(cwd)
+
+    if proc and proc.poll() is None:
+        proc.kill()
+        claude_processos.pop(cwd, None)
+        await update.message.reply_text(f"🛑 Comando cancelado! [{label}]")
+    else:
+        await update.message.reply_text(f"ℹ️ Nenhum comando em execução. [{label}]")
+
+
+@autorizado
+async def cmd_gitreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Limpa todas as alterações pendentes (checkout + clean)."""
+    if not await exigir_projeto(update):
+        return
+
+    cwd = projeto_path(update.effective_chat.id)
+    label = projeto_label(update.effective_chat.id)
+
+    rodar("git checkout .", cwd=cwd)
+    rodar("git clean -fd", cwd=cwd)
+    await update.message.reply_text(f"🗑️ Todas as alterações descartadas! [{label}]")
 
 
 def gerar_mensagem_commit(cwd):
@@ -740,7 +795,7 @@ async def cmd_diff(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_diffia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gera mensagem de commit inteligente usando Claude baseado no diff atual."""
+    """Gera resumo descritivo e mensagem de commit usando Claude baseado no diff atual."""
     if not await exigir_projeto(update):
         return
     chat_id = update.effective_chat.id
@@ -752,26 +807,40 @@ async def cmd_diffia(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ [{label}] Nenhuma alteração pendente.")
         return
 
+    # Montar resumo de status (novo/modificado/removido)
+    linhas = [l for l in status["stdout"].split("\n") if l.strip()]
+    added = [l for l in linhas if l.startswith("?") or l.startswith("A")]
+    modified = [l for l in linhas if l.startswith("M") or l.startswith(" M")]
+    deleted = [l for l in linhas if l.startswith("D") or l.startswith(" D")]
+
+    resumo_contagem = []
+    if added:
+        resumo_contagem.append(f"📄 {len(added)} novo(s)")
+    if modified:
+        resumo_contagem.append(f"✏️ {len(modified)} modificado(s)")
+    if deleted:
+        resumo_contagem.append(f"🗑️ {len(deleted)} removido(s)")
+
+    diff_stat = rodar("git diff --stat", cwd=cwd)
+
     diff_out = rodar("git diff", cwd=cwd)
     diff_cached = rodar("git diff --cached", cwd=cwd)
     diff_texto = (diff_out["stdout"] or "") + "\n" + (diff_cached["stdout"] or "")
     diff_texto = diff_texto.strip()
 
     if not diff_texto:
-        # Pode ter apenas arquivos untracked
         diff_texto = status["stdout"]
 
-    # Limitar tamanho do diff para não estourar
     if len(diff_texto) > 8000:
         diff_texto = diff_texto[:8000] + "\n... (diff truncado)"
 
     aguarde = await update.message.reply_text(f"🤖 [{label}] Analisando diff...")
 
     prompt = (
-        "Analise o diff abaixo e gere UMA mensagem de commit concisa e descritiva em português. "
-        "Use o formato convencional: tipo(escopo): descrição. "
-        "Tipos: feat, fix, refactor, docs, style, chore, test. "
-        "Responda APENAS com a mensagem de commit, nada mais. Sem explicações, sem aspas, sem prefixos.\\n\\n"
+        "Analise o diff abaixo e responda EXATAMENTE neste formato (sem nada antes ou depois):\\n"
+        "RESUMO: <resumo curto em português do que foi feito, 1-2 frases, linguagem natural>\\n"
+        "COMMIT: <mensagem de commit no formato tipo(escopo): descrição em português>\\n\\n"
+        "Tipos de commit: feat, fix, refactor, docs, style, chore, test.\\n\\n"
         f"{diff_texto}"
     ).replace('"', '\\"')
 
@@ -782,30 +851,34 @@ async def cmd_diffia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    msg_commit = texto_resposta.strip().strip('"').strip("'").strip("`")
-    await update.message.reply_text(
-        f"💡 [{label}] Sugestão de commit:\n\n<code>{html.escape(msg_commit)}</code>",
-        parse_mode="HTML",
-    )
+    resposta = texto_resposta.strip()
+    resumo_ia = ""
+    msg_commit = ""
+    for linha in resposta.split("\n"):
+        linha = linha.strip()
+        if linha.upper().startswith("RESUMO:"):
+            resumo_ia = linha[7:].strip()
+        elif linha.upper().startswith("COMMIT:"):
+            msg_commit = linha[7:].strip().strip('"').strip("'").strip("`")
+
+    if not msg_commit:
+        msg_commit = resposta.strip().strip('"').strip("'").strip("`")
+
+    # Montar mensagem final
+    texto = f"📊 [{label}] {', '.join(resumo_contagem)}\n\n"
+    texto += f"<pre>{html.escape(status['stdout'])}</pre>"
+    if diff_stat["stdout"]:
+        texto += f"\n\n<pre>{html.escape(diff_stat['stdout'])}</pre>"
+    if resumo_ia:
+        texto += f"\n\n📝 <b>Resumo:</b> {html.escape(resumo_ia)}"
+    texto += f"\n\n💡 <b>Commit:</b>\n<code>{html.escape(msg_commit)}</code>"
+
+    try:
+        await update.message.reply_text(texto, parse_mode="HTML")
+    except Exception:
+        await update.message.reply_text(texto)
 
 
-@autorizado
-async def cmd_setcommands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mostra instruções para configurar comandos no BotFather."""
-    # Descobrir username do bot
-    bot_info = await context.bot.get_me()
-    bot_username = f"@{bot_info.username}"
-
-    comandos = BOTFATHER_COMMANDS
-
-    await update.message.reply_text(
-        f"<b>1.</b> Abra @BotFather no Telegram\n\n"
-        f"<b>2.</b> Envie:\n<code>/setcommands</code>\n\n"
-        f"<b>3.</b> Digite ou Selecione:\n<code>{bot_username}</code>\n\n"
-        f"<b>4.</b> Cole tudo abaixo:\n\n"
-        f"<code>{comandos}</code>",
-        parse_mode="HTML",
-    )
 
 
 @autorizado
@@ -971,11 +1044,12 @@ def main():
     app.add_handler(CommandHandler("ping_pc", cmd_ping_pc))
     app.add_handler(CommandHandler("bash", cmd_bash))
     app.add_handler(CommandHandler("new", cmd_new_session))
-    app.add_handler(CommandHandler("diff", cmd_diff))
-    app.add_handler(CommandHandler("diffia", cmd_diffia))
+    app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("gitdiff", cmd_diff))
+    app.add_handler(CommandHandler("gitdiffia", cmd_diffia))
+    app.add_handler(CommandHandler("gitreset", cmd_gitreset))
     app.add_handler(CommandHandler("git", cmd_git))
     app.add_handler(CommandHandler("gitpush", cmd_push))
-    app.add_handler(CommandHandler("setcommands", cmd_setcommands))
     app.add_handler(CommandHandler("restart_bot", cmd_restart))
 
     # Mensagem livre → Claude
@@ -988,6 +1062,15 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, mensagem_foto))
 
     async def post_init(application):
+        # Registrar comandos automaticamente
+        from telegram import BotCommand
+        commands = []
+        for line in BOTFATHER_COMMANDS.strip().split("\n"):
+            if " - " in line:
+                cmd, desc = line.split(" - ", 1)
+                commands.append(BotCommand(cmd.strip(), desc.strip()))
+        await application.bot.set_my_commands(commands)
+
         await application.bot.send_message(
             chat_id=CHAT_ID,
             text=f"🟢 Bot [{BOT_NOME}] iniciado!\n📁 Projetos: {', '.join(PROJETOS.keys())}",

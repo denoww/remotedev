@@ -7,6 +7,5 @@ build/
 .env
 venv/
 .venv/
-claude-*.log
 bots/*.conf
-poll.log
+*.log
