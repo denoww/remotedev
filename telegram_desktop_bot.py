@@ -172,7 +172,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/rake <code>task</code> — rake task\n"
         "/log <code>N</code> — últimas N linhas do log\n"
         "/ping — verifica se desktop está online\n"
-        "/id — mostra seu chat_id",
+        "/id — mostra seu chat_id\n"
+        "/restart — reinicia o bot",
         parse_mode="HTML",
     )
 
@@ -322,6 +323,14 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @autorizado
+async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Reiniciando bot...")
+    res = rodar("systemctl --user restart rodrigodevbot", timeout=10)
+    if res["code"] != 0:
+        await update.message.reply_text(f"❌ Erro ao reiniciar:\n{res['stderr']}")
+
+
+@autorizado
 async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text.strip()
     if not texto:
@@ -383,6 +392,7 @@ def main():
     app.add_handler(CommandHandler("rails", cmd_rails))
     app.add_handler(CommandHandler("rake", cmd_rake))
     app.add_handler(CommandHandler("log", cmd_log))
+    app.add_handler(CommandHandler("restart", cmd_restart))
 
     # Mensagem livre → bash
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_livre))
