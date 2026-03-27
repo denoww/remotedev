@@ -185,7 +185,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/p <code>nome</code> — trocar direto\n\n"
         "<b>Comandos:</b>\n"
         "/bash <code>comando</code> — executa qualquer comando\n"
-        "/c <code>prompt</code> — Claude Code no projeto\n"
+        "/c <code>prompt</code> — Claude Code (nova conversa)\n"
+        "/cc <code>prompt</code> — Claude Code (continua conversa)\n"
         "/git <code>args</code> — git (pull, push, status...)\n"
         "/rails <code>args</code> — rails runner/console\n"
         "/rake <code>task</code> — rake task\n"
@@ -276,41 +277,45 @@ async def cmd_bash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await enviar_resultado(update, res, cmd)
 
 
-@autorizado
-async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = " ".join(context.args) if context.args else ""
-    if not prompt:
-        await update.message.reply_text("Uso: /c <prompt>")
-        return
+# Sessões do Claude por projeto (para /cc continuar conversa)
+claude_sessions = {}
 
-    label = projeto_label(update.effective_chat.id)
-    await update.message.reply_text(f"🧠 Claude pensando... [{label}]")
-
-    prompt_escaped = prompt.replace('"', '\\"')
-    cwd = projeto_path(update.effective_chat.id)
-
-    cmd_json = f'claude -p "{prompt_escaped}" --dangerously-skip-permissions --output-format json'
-    res = rodar(cmd_json, cwd=cwd, timeout=CLAUDE_TIMEOUT)
-
-    # Extrair resultado do JSON
+def rodar_claude(prompt_escaped, cwd, session_id=None):
+    """Roda o Claude e retorna (res, texto_resposta, session_id)."""
     import json as json_mod
+
+    flags = '--dangerously-skip-permissions --output-format json'
+    if session_id:
+        cmd = f'claude -p "{prompt_escaped}" --resume "{session_id}" {flags}'
+    else:
+        cmd = f'claude -p "{prompt_escaped}" {flags}'
+
+    res = rodar(cmd, cwd=cwd, timeout=CLAUDE_TIMEOUT)
+
     texto_resposta = ""
+    novo_session_id = None
     try:
         data = json_mod.loads(res["stdout"])
         if isinstance(data, dict):
             texto_resposta = data.get("result", "")
+            novo_session_id = data.get("session_id")
         elif isinstance(data, list):
             for item in data:
-                if isinstance(item, dict) and item.get("type") == "result":
-                    texto_resposta = item.get("result", "")
-                    break
+                if isinstance(item, dict):
+                    if item.get("type") == "result":
+                        texto_resposta = item.get("result", "")
+                    if item.get("session_id"):
+                        novo_session_id = item.get("session_id")
     except (json_mod.JSONDecodeError, TypeError, KeyError):
         texto_resposta = res["stdout"]
 
     if not texto_resposta:
         texto_resposta = "(sem resposta)"
 
-    # Log
+    return res, texto_resposta, novo_session_id
+
+def logar_claude(label, cwd, prompt, res, texto_resposta):
+    """Salva no log do Claude."""
     log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"claude-{BOT_NOME}.log")
     with open(log_file, "a") as f:
         f.write(f"\n{'='*60}\n")
@@ -323,7 +328,56 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if res["stderr"]:
             f.write(f"Erro:\n{res['stderr']}\n")
 
-    # Enviar resposta pro Telegram
+
+@autorizado
+async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args) if context.args else ""
+    if not prompt:
+        await update.message.reply_text("Uso: /c <prompt>\nUso: /cc <prompt> — continua última conversa")
+        return
+
+    label = projeto_label(update.effective_chat.id)
+    cwd = projeto_path(update.effective_chat.id)
+    await update.message.reply_text(f"🧠 Claude pensando... [{label}]")
+
+    prompt_escaped = prompt.replace('"', '\\"')
+    res, texto_resposta, session_id = rodar_claude(prompt_escaped, cwd)
+
+    # Salvar sessão do projeto para /cc
+    if session_id:
+        claude_sessions[cwd] = session_id
+
+    logar_claude(label, cwd, prompt, res, texto_resposta)
+
+    res["stdout"] = texto_resposta
+    await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
+
+
+@autorizado
+async def cmd_claude_continue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args) if context.args else ""
+    if not prompt:
+        await update.message.reply_text("Uso: /cc <prompt> — continua última conversa")
+        return
+
+    label = projeto_label(update.effective_chat.id)
+    cwd = projeto_path(update.effective_chat.id)
+    session_id = claude_sessions.get(cwd)
+
+    if not session_id:
+        await update.message.reply_text(f"⚠️ Nenhuma conversa anterior em [{label}]. Use /c primeiro.")
+        return
+
+    await update.message.reply_text(f"🧠 Claude continuando... [{label}]")
+
+    prompt_escaped = prompt.replace('"', '\\"')
+    res, texto_resposta, novo_session_id = rodar_claude(prompt_escaped, cwd, session_id)
+
+    if novo_session_id:
+        claude_sessions[cwd] = novo_session_id
+
+    logar_claude(label, cwd, f"(continuação) {prompt}", res, texto_resposta)
+
     res["stdout"] = texto_resposta
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
 
@@ -441,6 +495,7 @@ def main():
     app.add_handler(CommandHandler("bash", cmd_bash))
     app.add_handler(CommandHandler("claude", cmd_claude))
     app.add_handler(CommandHandler("c", cmd_claude))
+    app.add_handler(CommandHandler("cc", cmd_claude_continue))
     app.add_handler(CommandHandler("git", cmd_git))
     app.add_handler(CommandHandler("rails", cmd_rails))
     app.add_handler(CommandHandler("rake", cmd_rake))
