@@ -160,11 +160,12 @@ async def enviar_resultado(update: Update, res: dict, cmd: str):
     chat_id = update.effective_chat.id
     texto = formatar_resultado(res, cmd, chat_id)
     msg = update.message or update.callback_query.message
-    if len(texto) <= 4096:
-        await msg.reply_text(texto, parse_mode="HTML")
-    else:
-        for i in range(0, len(texto), 4096):
-            await msg.reply_text(texto[i:i + 4096], parse_mode="HTML")
+    pedacos = [texto[i:i + 4096] for i in range(0, len(texto), 4096)]
+    for pedaco in pedacos:
+        try:
+            await msg.reply_text(pedaco, parse_mode="HTML")
+        except Exception:
+            await msg.reply_text(pedaco)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -489,6 +490,7 @@ def main():
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("bash", cmd_bash))
     app.add_handler(CommandHandler("claude", cmd_claude))
+    app.add_handler(CommandHandler("c", cmd_claude))
     app.add_handler(CommandHandler("git", cmd_git))
     app.add_handler(CommandHandler("rails", cmd_rails))
     app.add_handler(CommandHandler("rake", cmd_rake))
