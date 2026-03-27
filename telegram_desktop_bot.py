@@ -324,10 +324,12 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Reiniciando bot...")
-    res = rodar("systemctl --user restart rodrigodevbot", timeout=10)
-    if res["code"] != 0:
-        await update.message.reply_text(f"❌ Erro ao reiniciar:\n{res['stderr']}")
+    await update.message.reply_text("🔄 Reiniciando bot em 2s...")
+    # Delay para a mensagem ser enviada antes do processo morrer
+    subprocess.Popen(
+        "sleep 2 && systemctl --user restart rodrigodevbot",
+        shell=True,
+    )
 
 
 @autorizado
