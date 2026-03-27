@@ -1,6 +1,6 @@
 # RodrigoDevBot
 
-Telegram Bot para controle remoto multiprojeto via desktop.
+Telegram Bot para controle remoto multiprojeto via desktop. Suporta múltiplas instâncias (ex: dev, prod) rodando em paralelo.
 
 ## Instalação
 
@@ -18,7 +18,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Setup
+## Setup de um bot
+
+Cada bot precisa de um nome (ex: `dev`, `prod`). Os exemplos abaixo usam `dev`.
 
 ### 1. Criar o bot no Telegram
 
@@ -26,31 +28,31 @@ Abra o Telegram, fale com [@BotFather](https://t.me/BotFather) e envie `/newbot`
 
 ### 2. Salvar o TOKEN no bashrc
 
-Substitua `SEU_TOKEN` pelo token que o BotFather gerou e rode:
+Substitua `SEU_TOKEN` e rode:
 
 ```bash
 MEU_TOKEN="SEU_TOKEN"
-grep -q 'TELEGRAM_BOT_DEV_TOKEN' ~/.bashrc && sed -i "s|export TELEGRAM_BOT_DEV_TOKEN=.*|export TELEGRAM_BOT_DEV_TOKEN=\"$MEU_TOKEN\"|" ~/.bashrc || echo "export TELEGRAM_BOT_DEV_TOKEN=\"$MEU_TOKEN\"" >> ~/.bashrc
+NOME="DEV"
+grep -q "TELEGRAM_BOT_${NOME}_TOKEN" ~/.bashrc && sed -i "s|export TELEGRAM_BOT_${NOME}_TOKEN=.*|export TELEGRAM_BOT_${NOME}_TOKEN=\"$MEU_TOKEN\"|" ~/.bashrc || echo "export TELEGRAM_BOT_${NOME}_TOKEN=\"$MEU_TOKEN\"" >> ~/.bashrc
 source ~/.bashrc
 ```
 
 ### 3. Descobrir seu CHAT_ID
 
-Rode o bot em modo discovery:
-
 ```bash
-python3 telegram_desktop_bot.py --get-chat-id
+python3 telegram_desktop_bot.py dev --get-chat-id
 ```
 
 Abra o Telegram e mande **qualquer mensagem** pro seu bot. O terminal vai mostrar seu `CHAT_ID`. Copie-o.
 
 ### 4. Salvar o CHAT_ID no bashrc
 
-Substitua `SEU_CHAT_ID` pelo número que apareceu no terminal e rode:
+Substitua `SEU_CHAT_ID` e rode:
 
 ```bash
 MEU_CHAT_ID="SEU_CHAT_ID"
-grep -q 'TELEGRAM_DEV_CHAT_ID' ~/.bashrc && sed -i "s|export TELEGRAM_DEV_CHAT_ID=.*|export TELEGRAM_DEV_CHAT_ID=\"$MEU_CHAT_ID\"|" ~/.bashrc || echo "export TELEGRAM_DEV_CHAT_ID=\"$MEU_CHAT_ID\"" >> ~/.bashrc
+NOME="DEV"
+grep -q "TELEGRAM_${NOME}_CHAT_ID" ~/.bashrc && sed -i "s|export TELEGRAM_${NOME}_CHAT_ID=.*|export TELEGRAM_${NOME}_CHAT_ID=\"$MEU_CHAT_ID\"|" ~/.bashrc || echo "export TELEGRAM_${NOME}_CHAT_ID=\"$MEU_CHAT_ID\"" >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -75,38 +77,56 @@ restart - Reinicia o bot
 ### 6. Instalar como serviço (inicia com o sistema)
 
 ```bash
-./install_service.sh
+./install_service.sh dev
 ```
-
-O script cria o serviço systemd, configura as variáveis de ambiente e inicia o bot automaticamente.
 
 Depois abra seu bot no Telegram e envie `/start`.
 
-### 7. Logs
+## Adicionar outro bot
 
-Logs do bot (systemd):
+Repita os passos acima com outro nome. Exemplo para `prod`:
 
 ```bash
-./logs_do_service.sh
+# Passo 2 — TOKEN
+MEU_TOKEN="TOKEN_DO_BOT_PROD"
+NOME="PROD"
+grep -q "TELEGRAM_BOT_${NOME}_TOKEN" ~/.bashrc && sed -i "s|export TELEGRAM_BOT_${NOME}_TOKEN=.*|export TELEGRAM_BOT_${NOME}_TOKEN=\"$MEU_TOKEN\"|" ~/.bashrc || echo "export TELEGRAM_BOT_${NOME}_TOKEN=\"$MEU_TOKEN\"" >> ~/.bashrc
+source ~/.bashrc
+
+# Passo 3 — CHAT_ID
+python3 telegram_desktop_bot.py prod --get-chat-id
+
+# Passo 4 — Salvar CHAT_ID
+MEU_CHAT_ID="CHAT_ID_DO_PROD"
+NOME="PROD"
+grep -q "TELEGRAM_${NOME}_CHAT_ID" ~/.bashrc && sed -i "s|export TELEGRAM_${NOME}_CHAT_ID=.*|export TELEGRAM_${NOME}_CHAT_ID=\"$MEU_CHAT_ID\"|" ~/.bashrc || echo "export TELEGRAM_${NOME}_CHAT_ID=\"$MEU_CHAT_ID\"" >> ~/.bashrc
+source ~/.bashrc
+
+# Passo 6 — Instalar serviço
+./install_service.sh prod
 ```
 
-Logs das execuções do `/claude`:
+## Logs
 
 ```bash
-./logs_do_claude.sh
-./logs_do_claude.sh scsip   # filtra por projeto
+./logs_do_service.sh dev        # logs do bot dev
+./logs_do_service.sh prod       # logs do bot prod
+./logs_do_claude.sh dev         # execuções do /claude no bot dev
+./logs_do_claude.sh dev scsip   # filtra por projeto
 ```
 
-Status do serviço:
+Status:
 
 ```bash
-systemctl --user status rodrigodevbot
+systemctl --user status rodrigodevbot-dev
+systemctl --user status rodrigodevbot-prod
 ```
 
-### 8. Desinstalar
+## Desinstalar
 
 ```bash
-./uninstall_service.sh
+./uninstall_service.sh dev
+./uninstall_service.sh prod
 ```
 
 ## Comandos disponíveis

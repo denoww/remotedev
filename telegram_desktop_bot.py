@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
 Telegram Bot — Controle remoto multiprojeto.
+Suporta múltiplas instâncias (bots) rodando em paralelo.
 
-Setup:
-  1. Fale com @BotFather no Telegram → /newbot → copie o TOKEN
-  2. Mande /start pro bot, depois rode: python3 telegram_desktop_bot.py --get-chat-id
-  3. Preencha TOKEN e CHAT_ID abaixo (ou use variáveis de ambiente)
-  4. Configure seus projetos no dict PROJETOS
-  5. pip install python-telegram-bot==20.7
-  6. python3 telegram_desktop_bot.py
+Uso:
+  python3 telegram_desktop_bot.py <nome_bot>
+  python3 telegram_desktop_bot.py dev
+  python3 telegram_desktop_bot.py prod
+  python3 telegram_desktop_bot.py dev --get-chat-id
+
+Variáveis de ambiente por bot:
+  TELEGRAM_BOT_<NOME>_TOKEN   — token do BotFather
+  TELEGRAM_<NOME>_CHAT_ID     — chat_id autorizado
 """
 
 import os
-import asyncio
+import sys
 import subprocess
 import html
 from datetime import datetime
@@ -30,8 +33,25 @@ from telegram.ext import (
 # CONFIGURAÇÃO
 # ══════════════════════════════════════════════════════════════════════
 
-TOKEN = os.environ.get("TELEGRAM_BOT_DEV_TOKEN", "SEU_TOKEN_AQUI")
-CHAT_ID = int(os.environ.get("TELEGRAM_DEV_CHAT_ID", "0"))
+def carregar_config():
+    """Carrega config baseado no nome do bot passado como argumento."""
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
+        print("Uso: python3 telegram_desktop_bot.py <nome_bot>")
+        print("  Ex: python3 telegram_desktop_bot.py dev")
+        print("  Ex: python3 telegram_desktop_bot.py prod")
+        sys.exit(1)
+
+    nome = args[0].lower()
+    nome_upper = nome.upper()
+
+    token = os.environ.get(f"TELEGRAM_BOT_{nome_upper}_TOKEN", "")
+    chat_id = int(os.environ.get(f"TELEGRAM_{nome_upper}_CHAT_ID", "0"))
+
+    return nome, token, chat_id
+
+BOT_NOME, TOKEN, CHAT_ID = carregar_config()
+BOT_SERVICE = f"rodrigodevbot-{BOT_NOME}"
 
 WORKSPACE = os.path.expanduser("~/workspace")
 
@@ -49,13 +69,11 @@ def descobrir_projetos(workspace: str) -> dict:
 
 PROJETOS = descobrir_projetos(WORKSPACE)
 
-# Projeto padrão ao iniciar (primeiro da lista ou "seucondominio")
 PROJETO_PADRAO = "seucondominio" if "seucondominio" in PROJETOS else next(iter(PROJETOS), None)
 
 DEFAULT_TIMEOUT = 120
 CLAUDE_TIMEOUT = 600
 
-# Estado por chat (projeto ativo)
 estado = {}
 
 # ══════════════════════════════════════════════════════════════════════
@@ -159,11 +177,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label = projeto_label(chat_id)
 
     await update.message.reply_text(
-        f"🤖 <b>Desktop Bot ativo!</b>\n"
+        f"🤖 <b>Bot [{BOT_NOME}] ativo!</b>\n"
         f"Projeto atual: {label}\n\n"
         "<b>Projeto:</b>\n"
         "/p — trocar projeto (botões)\n"
-        "/p <code>erp</code> — trocar direto\n\n"
+        "/p <code>nome</code> — trocar direto\n\n"
         "<b>Comandos:</b>\n"
         "/bash <code>comando</code> — executa qualquer comando\n"
         "/claude <code>prompt</code> — Claude Code no projeto\n"
@@ -182,7 +200,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    # /p erp → troca direto
     if context.args:
         key = context.args[0].lower()
         if key in PROJETOS:
@@ -194,7 +211,6 @@ async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Projeto não encontrado. Opções: {nomes}")
         return
 
-    # /p sem argumento → mostra botões
     atual = projeto_ativo(chat_id)
     botoes = []
     for key, cfg in PROJETOS.items():
@@ -206,7 +222,6 @@ async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
 
-    # 2 botões por linha
     teclado = [botoes[i:i + 2] for i in range(0, len(botoes), 2)]
     await update.message.reply_text(
         "Selecione o projeto:",
@@ -245,7 +260,7 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     label = projeto_label(update.effective_chat.id)
-    await update.message.reply_text(f"🟢 Online — {agora}\nProjeto: {label}")
+    await update.message.reply_text(f"🟢 Online [{BOT_NOME}] — {agora}\nProjeto: {label}")
 
 
 @autorizado
@@ -276,8 +291,7 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cwd = projeto_path(update.effective_chat.id)
     res = rodar(cmd, cwd=cwd, timeout=CLAUDE_TIMEOUT)
 
-    # Log da execução
-    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude.log")
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"claude-{BOT_NOME}.log")
     with open(log_file, "a") as f:
         f.write(f"\n{'='*60}\n")
         f.write(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] {label}\n")
@@ -339,10 +353,9 @@ async def cmd_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Reiniciando bot em 2s...")
-    # Delay para a mensagem ser enviada antes do processo morrer
+    await update.message.reply_text(f"🔄 Reiniciando bot [{BOT_NOME}] em 2s...")
     subprocess.Popen(
-        "sleep 2 && systemctl --user restart rodrigodevbot",
+        f"sleep 2 && systemctl --user restart {BOT_SERVICE}",
         shell=True,
     )
 
@@ -363,14 +376,13 @@ async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════════════
 
 def main():
-    print("🤖 Bot iniciando...")
-    print(f"📁 Projetos ({len(PROJETOS)}): {", ".join(PROJETOS.keys())}")
+    print(f"🤖 Bot [{BOT_NOME}] iniciando...")
+    print(f"📁 Projetos ({len(PROJETOS)}): {', '.join(PROJETOS.keys())}")
     print(f"🔐 Chat ID autorizado: {CHAT_ID}")
 
-    import sys
     if "--get-chat-id" in sys.argv:
-        if TOKEN == "SEU_TOKEN_AQUI":
-            print("\n⚠️  Configure TELEGRAM_BOT_DEV_TOKEN primeiro!")
+        if not TOKEN:
+            print(f"\n⚠️  Configure TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN primeiro!")
             print("   Veja o README para instruções.")
             return
 
@@ -386,10 +398,11 @@ def main():
         app.run_polling()
         return
 
-    if TOKEN == "SEU_TOKEN_AQUI" or CHAT_ID == 0:
-        print("\n⚠️  Configure TOKEN e CHAT_ID!")
-        print("   1. Fale com @BotFather → /newbot → copie o token")
-        print("   2. Rode: python3 telegram_desktop_bot.py --get-chat-id")
+    if not TOKEN or CHAT_ID == 0:
+        print(f"\n⚠️  Configure as variáveis para o bot '{BOT_NOME}':")
+        print(f"   TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN")
+        print(f"   TELEGRAM_{BOT_NOME.upper()}_CHAT_ID")
+        print("   Veja o README para instruções.")
         return
 
     app = Application.builder().token(TOKEN).build()

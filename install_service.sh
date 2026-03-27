@@ -1,18 +1,35 @@
 #!/bin/bash
 #
-# Instala o RodrigoDevBot como serviço systemd (inicia com o sistema)
+# Instala uma instância do RodrigoDevBot como serviço systemd.
+#
+# Uso:
+#   ./install_service.sh dev
+#   ./install_service.sh prod
 #
 
 set -e
 
+if [ -z "$1" ]; then
+    echo "Uso: ./install_service.sh <nome_bot>"
+    echo "  Ex: ./install_service.sh dev"
+    echo "  Ex: ./install_service.sh prod"
+    exit 1
+fi
+
+BOT_NOME="$1"
+BOT_NOME_UPPER=$(echo "$BOT_NOME" | tr '[:lower:]' '[:upper:]')
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_NAME="rodrigodevbot"
+SERVICE_NAME="rodrigodevbot-$BOT_NOME"
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SERVICE_DIR/$SERVICE_NAME.service"
 ENV_FILE="$SERVICE_DIR/$SERVICE_NAME.env"
 
-echo "📦 Instalando RodrigoDevBot como serviço..."
+TOKEN_VAR="TELEGRAM_BOT_${BOT_NOME_UPPER}_TOKEN"
+CHAT_ID_VAR="TELEGRAM_${BOT_NOME_UPPER}_CHAT_ID"
+
+echo "📦 Instalando bot [$BOT_NOME] como serviço..."
 echo "   Diretório: $BOT_DIR"
+echo "   Serviço:   $SERVICE_NAME"
 echo ""
 
 # Verificar venv
@@ -23,13 +40,16 @@ if [ ! -f "$BOT_DIR/venv/bin/python3" ]; then
 fi
 
 # Verificar variáveis de ambiente
-if [ -z "$TELEGRAM_BOT_DEV_TOKEN" ]; then
-    echo "❌ TELEGRAM_BOT_DEV_TOKEN não definido. Veja o README (passos 2)."
+TOKEN_VAL="${!TOKEN_VAR}"
+CHAT_ID_VAL="${!CHAT_ID_VAR}"
+
+if [ -z "$TOKEN_VAL" ]; then
+    echo "❌ $TOKEN_VAR não definido. Veja o README."
     exit 1
 fi
 
-if [ -z "$TELEGRAM_DEV_CHAT_ID" ]; then
-    echo "❌ TELEGRAM_DEV_CHAT_ID não definido. Veja o README (passos 3 e 4)."
+if [ -z "$CHAT_ID_VAL" ] || [ "$CHAT_ID_VAL" = "0" ]; then
+    echo "❌ $CHAT_ID_VAR não definido. Veja o README."
     exit 1
 fi
 
@@ -38,22 +58,22 @@ mkdir -p "$SERVICE_DIR"
 
 # Criar arquivo de variáveis
 cat > "$ENV_FILE" << EOF
-TELEGRAM_BOT_DEV_TOKEN=$TELEGRAM_BOT_DEV_TOKEN
-TELEGRAM_DEV_CHAT_ID=$TELEGRAM_DEV_CHAT_ID
+$TOKEN_VAR=$TOKEN_VAL
+$CHAT_ID_VAR=$CHAT_ID_VAL
 EOF
 echo "✅ Variáveis salvas em $ENV_FILE"
 
 # Criar serviço
 cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=RodrigoDevBot - Telegram Bot
+Description=RodrigoDevBot [$BOT_NOME] - Telegram Bot
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$BOT_DIR
-ExecStart=$BOT_DIR/venv/bin/python3 telegram_desktop_bot.py
+ExecStart=$BOT_DIR/venv/bin/python3 telegram_desktop_bot.py $BOT_NOME
 Restart=always
 RestartSec=5
 EnvironmentFile=$ENV_FILE
@@ -70,9 +90,10 @@ systemctl --user restart "$SERVICE_NAME"
 loginctl enable-linger "$USER"
 
 echo ""
-echo "✅ Bot instalado e rodando!"
+echo "✅ Bot [$BOT_NOME] instalado e rodando!"
 echo ""
 echo "   Ver status:  systemctl --user status $SERVICE_NAME"
-echo "   Ver logs:    journalctl --user -u $SERVICE_NAME -f"
+echo "   Ver logs:    ./logs_do_service.sh $BOT_NOME"
 echo "   Reiniciar:   systemctl --user restart $SERVICE_NAME"
 echo "   Parar:       systemctl --user stop $SERVICE_NAME"
+echo "   Remover:     ./uninstall_service.sh $BOT_NOME"

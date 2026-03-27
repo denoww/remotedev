@@ -7,4 +7,4 @@ build/
 .env
 venv/
 .venv/
-claude.log
+claude-*.log
