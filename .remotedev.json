@@ -1,7 +1,7 @@
 {
   "hooks": [
     {
-      "match": "git push",
+      "match": "push",
       "run": "systemctl --user restart remotedev-botdev",
       "msg": "🔄 Bot reiniciado após push"
     }

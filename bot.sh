@@ -341,6 +341,41 @@ cmd_start() {
     echo "🟢 Bot [$nome] iniciado."
 }
 
+cmd_poll() {
+    local action="${1:-status}"
+    local poll_script="$BOT_DIR/poll-and-restart.sh"
+    local poll_log="$BOT_DIR/poll.log"
+    case "$action" in
+        on)
+            (crontab -l 2>/dev/null | grep -v poll-and-restart; echo "*/2 * * * * $poll_script") | crontab -
+            echo "✅ Polling ativado (a cada 2 min)"
+            ;;
+        off)
+            crontab -l 2>/dev/null | grep -v poll-and-restart | crontab -
+            echo "🔴 Polling desativado"
+            ;;
+        log)
+            if [ -f "$poll_log" ]; then
+                tail -20 "$poll_log"
+            else
+                echo "Nenhum log de polling ainda."
+            fi
+            ;;
+        status|*)
+            if crontab -l 2>/dev/null | grep -q poll-and-restart; then
+                echo "🟢 Polling ativo (a cada 2 min)"
+            else
+                echo "🔴 Polling inativo"
+            fi
+            if [ -f "$poll_log" ]; then
+                echo ""
+                echo "Últimas entradas:"
+                tail -5 "$poll_log"
+            fi
+            ;;
+    esac
+}
+
 cmd_help() {
     echo "remotedev — Script centralizado"
     echo ""
@@ -356,6 +391,7 @@ cmd_help() {
     echo "  start [nome]                   Inicia um bot"
     echo "  logs [nome]                    Logs do serviço"
     echo "  logs-claude [nome] [filtro]    Logs do Claude"
+    echo "  poll [on|off|log|status]       Gerencia polling de commits"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -370,5 +406,6 @@ case "${1:-}" in
     restart)    cmd_restart "$2" ;;
     stop)       cmd_stop "$2" ;;
     start)      cmd_start "$2" ;;
+    poll)       cmd_poll "$2" ;;
     *)          cmd_help ;;
 esac

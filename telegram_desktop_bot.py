@@ -297,7 +297,7 @@ async def processar_comando(chat_id, texto, msg, context):
         logar_claude(label, cwd, prompt, res, texto_resposta)
         res["stdout"] = texto_resposta
         await msg.reply_text(texto_resposta or "(sem resposta)")
-        hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+        hooks_msgs = executar_hooks(cwd, prompt, texto_resposta)
         for h in hooks_msgs:
             await msg.reply_text(h)
 
@@ -316,7 +316,7 @@ async def processar_comando(chat_id, texto, msg, context):
         logar_claude(label, cwd, f"(continuação) {prompt}", res, texto_resposta)
         res["stdout"] = texto_resposta
         await msg.reply_text(texto_resposta or "(sem resposta)")
-        hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+        hooks_msgs = executar_hooks(cwd, prompt, texto_resposta)
         for h in hooks_msgs:
             await msg.reply_text(h)
 
@@ -390,13 +390,14 @@ def carregar_hooks(cwd):
         return []
 
 
-def executar_hooks(cwd, saida_bruta):
-    """Verifica hooks do projeto e executa os que casam com a saída do Claude."""
+def executar_hooks(cwd, prompt, resposta):
+    """Verifica hooks do projeto e executa os que casam com o prompt ou resposta."""
     hooks = carregar_hooks(cwd)
     resultados = []
+    texto_busca = f"{prompt}\n{resposta}".lower()
     for hook in hooks:
-        match = hook.get("match", "")
-        if match and match in saida_bruta:
+        match = hook.get("match", "").lower()
+        if match and match in texto_busca:
             run_cmd = hook.get("run", "")
             msg = hook.get("msg", f"Hook executado: {run_cmd}")
             if run_cmd:
@@ -483,7 +484,7 @@ async def cmd_claude(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
 
     # Executar hooks pós-Claude
-    hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+    hooks_msgs = executar_hooks(cwd, prompt, texto_resposta)
     for msg in hooks_msgs:
         await update.message.reply_text(msg)
 
@@ -519,7 +520,7 @@ async def cmd_claude_continue(update: Update, context: ContextTypes.DEFAULT_TYPE
     await enviar_resultado(update, res, f"claude: {prompt[:80]}...")
 
     # Executar hooks pós-Claude
-    hooks_msgs = executar_hooks(cwd, res.get("_raw", "") or texto_resposta)
+    hooks_msgs = executar_hooks(cwd, prompt, texto_resposta)
     for msg in hooks_msgs:
         await update.message.reply_text(msg)
 
