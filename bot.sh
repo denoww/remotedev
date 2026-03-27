@@ -227,9 +227,22 @@ $TOKEN_VAR=$BOT_TOKEN
 $CHAT_ID_VAR=$BOT_CHAT_ID
 EOF
 
+    # PATH para o systemd encontrar binários como claude
+    echo "PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" >> "$SERVICE_DIR/$SERVICE_NAME.env"
+
     if [ -n "$OPENAI_KEY" ]; then
         echo "OPENAI_API_KEY=$OPENAI_KEY" >> "$SERVICE_DIR/$SERVICE_NAME.env"
     fi
+
+    # Criar serviço de notificação de falha
+    cat > "$SERVICE_DIR/remotedev-notify@.service" << EOF
+[Unit]
+Description=Notifica falha de %i no Telegram
+
+[Service]
+Type=oneshot
+ExecStart=$BOT_DIR/notify-failure.sh %i
+EOF
 
     # Criar serviço
     cat > "$SERVICE_DIR/$SERVICE_NAME.service" << EOF
@@ -237,6 +250,7 @@ EOF
 Description=remotedev [$BOT_NOME] - Telegram Bot
 After=network-online.target
 Wants=network-online.target
+OnFailure=remotedev-notify@%n.service
 
 [Service]
 Type=simple
