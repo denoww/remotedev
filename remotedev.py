@@ -213,6 +213,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/p <code>nome</code> — trocar direto\n\n"
         "<b>Comandos:</b>\n"
         "/bash <code>comando</code> — executa no terminal\n"
+        "/push <code>msg</code> — add+commit+push (sem msg = auto)\n"
         "/git <code>args</code> — git (pull, push, status...)\n"
         "/ping_pc — verifica se desktop está online\n"
         "/meu_chat_id — mostra seu chat_id\n"
@@ -293,6 +294,26 @@ async def processar_comando(chat_id, texto, msg, context):
         cmd = texto.split(" ", 1)[1]
         await msg.reply_text("⏳ Executando...")
         res = rodar(cmd, cwd=cwd)
+        await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
+
+    elif texto.startswith("/push"):
+        msg_commit = texto.split(" ", 1)[1].strip() if " " in texto else ""
+        if not msg_commit:
+            msg_commit = gerar_mensagem_commit(cwd)
+        if not msg_commit:
+            await msg.reply_text("⚠️ Nenhuma alteração encontrada para commitar.")
+            return
+        await msg.reply_text(f"⏳ Push: {msg_commit}")
+        res = rodar("git add -A", cwd=cwd)
+        if res["code"] == 0:
+            res = rodar(f'git commit -m "{msg_commit}"', cwd=cwd)
+            if res["code"] == 0:
+                res = rodar("git push", cwd=cwd, timeout=60)
+                await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
+                if res["code"] == 0:
+                    for h in executar_hooks(cwd, {"git_pushed"}):
+                        await msg.reply_text(h)
+                return
         await msg.reply_text(res["stdout"] or res["stderr"] or "(sem saída)")
 
     elif texto.startswith("/git"):
@@ -518,6 +539,142 @@ async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Nova sessão iniciada! [{label}]")
 
 
+def gerar_mensagem_commit(cwd):
+    """Gera mensagem de commit em português baseada no git diff."""
+    # Pegar diff dos arquivos staged + unstaged
+    diff = subprocess.run(
+        ["git", "diff", "HEAD", "--stat"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+    stat = diff.stdout.strip()
+    if not stat:
+        # Verificar arquivos não rastreados
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=cwd, capture_output=True, text=True, timeout=10,
+        )
+        if untracked.stdout.strip():
+            arquivos = untracked.stdout.strip().split("\n")
+            if len(arquivos) == 1:
+                return f"Adicionar {arquivos[0]}"
+            return f"Adicionar {len(arquivos)} novos arquivos"
+        return None
+
+    # Pegar diff detalhado para entender as mudanças
+    diff_detail = subprocess.run(
+        ["git", "diff", "HEAD", "--no-color"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+    diff_text = diff_detail.stdout.strip()
+
+    # Analisar arquivos alterados
+    changed = subprocess.run(
+        ["git", "diff", "HEAD", "--name-only"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+    arquivos = [f for f in changed.stdout.strip().split("\n") if f]
+
+    if not arquivos:
+        return None
+
+    # Contadores
+    added = subprocess.run(
+        ["git", "diff", "HEAD", "--diff-filter=A", "--name-only"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+    deleted = subprocess.run(
+        ["git", "diff", "HEAD", "--diff-filter=D", "--name-only"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+    modified = subprocess.run(
+        ["git", "diff", "HEAD", "--diff-filter=M", "--name-only"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+
+    added_files = [f for f in added.stdout.strip().split("\n") if f]
+    deleted_files = [f for f in deleted.stdout.strip().split("\n") if f]
+    modified_files = [f for f in modified.stdout.strip().split("\n") if f]
+
+    # Incluir arquivos não rastreados como adicionados
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=cwd, capture_output=True, text=True, timeout=10,
+    )
+    untracked_files = [f for f in untracked.stdout.strip().split("\n") if f]
+    added_files.extend(untracked_files)
+
+    partes = []
+    if len(arquivos) + len(untracked_files) == 1:
+        nome = (arquivos + untracked_files)[0]
+        if added_files:
+            return f"Adicionar {nome}"
+        if deleted_files:
+            return f"Remover {nome}"
+        return f"Atualizar {nome}"
+
+    if added_files:
+        partes.append(f"adicionar {len(added_files)} arquivo(s)")
+    if modified_files:
+        partes.append(f"atualizar {len(modified_files)} arquivo(s)")
+    if deleted_files:
+        partes.append(f"remover {len(deleted_files)} arquivo(s)")
+
+    if partes:
+        msg = partes[0].capitalize()
+        if len(partes) > 1:
+            msg += " e " + ", ".join(partes[1:])
+        return msg
+
+    return f"Atualizar {len(arquivos)} arquivo(s)"
+
+
+@autorizado
+async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Faz add, commit e push. Se não passar mensagem, gera automaticamente."""
+    if not await exigir_projeto(update):
+        return
+
+    chat_id = update.effective_chat.id
+    cwd = projeto_path(chat_id)
+    msg_commit = " ".join(context.args).strip() if context.args else ""
+
+    # Se não passou mensagem, gerar automaticamente
+    if not msg_commit:
+        msg_commit = gerar_mensagem_commit(cwd)
+        if not msg_commit:
+            await update.message.reply_text("⚠️ Nenhuma alteração encontrada para commitar.")
+            return
+
+    await update.message.reply_text(f"⏳ Push: {msg_commit}")
+
+    # git add -A
+    res = rodar("git add -A", cwd=cwd)
+    if res["code"] != 0:
+        await enviar_resultado(update, res, "git add -A")
+        return
+
+    # git commit
+    cmd_commit = f'git commit -m "{msg_commit}"'
+    res = rodar(cmd_commit, cwd=cwd)
+    if res["code"] != 0:
+        # Verificar se é "nothing to commit"
+        if "nothing to commit" in (res["stdout"] + res["stderr"]):
+            await update.message.reply_text("⚠️ Nada para commitar.")
+            return
+        await enviar_resultado(update, res, cmd_commit)
+        return
+
+    # git push
+    res = rodar("git push", cwd=cwd, timeout=60)
+    await enviar_resultado(update, res, f"git push ({msg_commit})")
+
+    # Executar hooks de push
+    eventos = {"git_pushed"} if res["code"] == 0 else set()
+    hooks_msgs = executar_hooks(cwd, eventos)
+    for h in hooks_msgs:
+        await update.message.reply_text(h)
+
+
 @autorizado
 async def cmd_git(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await exigir_projeto(update):
@@ -602,6 +759,7 @@ def main():
     app.add_handler(CommandHandler("bash", cmd_bash))
     app.add_handler(CommandHandler("new", cmd_new_session))
     app.add_handler(CommandHandler("git", cmd_git))
+    app.add_handler(CommandHandler("push", cmd_push))
     app.add_handler(CommandHandler("restart", cmd_restart))
 
     # Mensagem livre → Claude
