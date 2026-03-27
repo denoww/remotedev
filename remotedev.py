@@ -615,27 +615,33 @@ def rodar_claude(prompt, cwd, session_id=None):
 
     return res, texto_resposta, novo_session_id
 
-LOG_FILE_CLAUDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"claude-{BOT_NOME}.log")
+import logging
+from logging.handlers import RotatingFileHandler
+
+LOG_FILE_CLAUDE = os.path.join(BOT_REPO_DIR, f"claude-{BOT_NOME}.log")
+_claude_logger = logging.getLogger(f"claude-{BOT_NOME}")
+_claude_logger.setLevel(logging.INFO)
+_claude_handler = RotatingFileHandler(LOG_FILE_CLAUDE, maxBytes=5*1024*1024, backupCount=3)
+_claude_handler.setFormatter(logging.Formatter("%(message)s"))
+_claude_logger.addHandler(_claude_handler)
 
 
 def logar_prompt(label, cwd, prompt):
     """Loga o prompt imediatamente (antes do Claude processar)."""
-    with open(LOG_FILE_CLAUDE, "a") as f:
-        f.write(f"\n{'='*60}\n")
-        f.write(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] {label}\n")
-        f.write(f"Projeto: {cwd}\n")
-        f.write(f"Prompt: {prompt}\n")
-        f.write(f"⏳ Aguardando Claude...\n")
+    _claude_logger.info(f"\n{'='*60}")
+    _claude_logger.info(f"[{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}] {label}")
+    _claude_logger.info(f"Projeto: {cwd}")
+    _claude_logger.info(f"Prompt: {prompt}")
+    _claude_logger.info(f"⏳ Aguardando Claude...")
 
 
 def logar_claude(label, cwd, prompt, res, texto_resposta):
     """Salva resposta do Claude no log (complementa o logar_prompt)."""
-    with open(LOG_FILE_CLAUDE, "a") as f:
-        f.write(f"Exit: {res['code']}\n")
-        if texto_resposta:
-            f.write(f"Resposta:\n{texto_resposta}\n")
-        if res["stderr"]:
-            f.write(f"Erro:\n{res['stderr']}\n")
+    _claude_logger.info(f"Exit: {res['code']}")
+    if texto_resposta:
+        _claude_logger.info(f"Resposta:\n{texto_resposta}")
+    if res["stderr"]:
+        _claude_logger.info(f"Erro:\n{res['stderr']}")
 
 
 async def enviar_para_claude(update: Update, prompt: str):
