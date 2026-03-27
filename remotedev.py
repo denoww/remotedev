@@ -806,6 +806,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_projeto, pattern=r"^projeto:"))
 
     # Comandos
+    app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("meu_chat_id", cmd_meu_chat_id))
     app.add_handler(CommandHandler("ping_pc", cmd_ping_pc))
