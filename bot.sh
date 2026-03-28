@@ -100,6 +100,19 @@ cmd_install() {
         exit 1
     fi
 
+    # Verificar Claude Code
+    if ! command -v claude &>/dev/null; then
+        echo "❌ Claude Code não está instalado."
+        echo "   Instale com: npm install -g @anthropic-ai/claude-code"
+        exit 1
+    fi
+
+    if ! claude auth status &>/dev/null; then
+        echo "❌ Claude Code não está logado."
+        echo "   Faça login com: claude login"
+        exit 1
+    fi
+
     # Nome do bot
     local DEFAULT_BOT="botdev"
     read -p "Nome do bot [$DEFAULT_BOT]: " BOT_NOME
