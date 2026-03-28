@@ -27,7 +27,7 @@ from telegram.ext import (
 )
 
 from lib.config import (
-    BOT_NOME, TOKEN, CHAT_ID, BOT_SERVICE,
+    BOT_NOME, TOKEN, CHAT_ID, BOT_SERVICE, BOT_REPO_DIR,
     PROJETOS, BOTFATHER_COMMANDS,
 )
 from lib.utils import (
@@ -257,8 +257,8 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🔄 Reiniciando {BOT_NOME}...")
-    subprocess.Popen(f"sleep 2 && systemctl --user restart {BOT_SERVICE}", shell=True)
+    await update.message.reply_text(f"🔄 Atualizando e reiniciando {BOT_NOME}...")
+    subprocess.Popen(f"sleep 2 && cd {BOT_REPO_DIR} && git pull && systemctl --user restart {BOT_SERVICE}", shell=True)
 
 
 # ══════════════════════════════════════════════════════════════════════
