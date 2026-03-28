@@ -64,9 +64,12 @@ async def pos_push(update_or_msg, cwd, res):
         or getattr(getattr(update_or_msg, 'callback_query', None), 'message', None)
         or update_or_msg
     )
-    if res["code"] == 0:
-        for h in executar_hooks(cwd, {"git_pushed"}):
-            await msg.reply_text(h)
-        if os.path.realpath(cwd) == os.path.realpath(BOT_REPO_DIR):
-            await msg.reply_text(f"🔄 Reiniciando {BOT_NOME}...")
-            subprocess.Popen(f"sleep 2 && systemctl --user restart {BOT_SERVICE}", shell=True)
+    if not res or res["code"] != 0:
+        return
+    if not msg:
+        return
+    for h in executar_hooks(cwd, {"git_pushed"}):
+        await msg.reply_text(h)
+    if os.path.realpath(cwd) == os.path.realpath(BOT_REPO_DIR):
+        await msg.reply_text(f"🔄 Reiniciando {BOT_NOME}...")
+        subprocess.Popen(f"sleep 2 && systemctl --user restart {BOT_SERVICE}", shell=True)
