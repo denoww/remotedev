@@ -130,7 +130,9 @@ def formatar_resultado(res: dict, cmd: str, chat_id: int) -> str:
 async def enviar_resultado(update: Update, res: dict, cmd: str):
     chat_id = update.effective_chat.id
     texto = formatar_resultado(res, cmd, chat_id)
-    msg = update.message or update.callback_query.message
+    msg = update.message or getattr(update.callback_query, 'message', None)
+    if not msg:
+        return
     pedacos = [texto[i:i + TELEGRAM_MSG_LIMIT] for i in range(0, len(texto), TELEGRAM_MSG_LIMIT)]
     for pedaco in pedacos:
         try:

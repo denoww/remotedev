@@ -62,7 +62,6 @@ async def pos_push(update_or_msg, cwd, res):
     msg = (
         getattr(update_or_msg, 'message', None)
         or getattr(getattr(update_or_msg, 'callback_query', None), 'message', None)
-        or update_or_msg
     )
     if not res or res["code"] != 0:
         return
