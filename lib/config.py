@@ -38,16 +38,16 @@ PROJETO_PADRAO = None
 
 BOTFATHER_COMMANDS = (
     "start - Exibe este menu\n"
-    "limpar_conversa - Limpa conversa do Claude\n"
-    "stop - Para o comando em andamento\n"
+    "gitpush - Faz add, commit e push de uma vez\n"
+    "gitdiff - Mostra diff e sugere mensagem de commit\n"
+    "restart_bot - Reinicia o bot\n"
     "projeto - Seleciona o projeto ativo\n"
     "bash - Roda um comando no terminal\n"
-    "gitdiff - Mostra diff e sugere mensagem de commit\n"
-    "gitpush - Faz add, commit e push de uma vez\n"
     "gitbranch - Troca ou cria branch\n"
     "gitreset - Descarta todas as alteracoes locais\n"
-    "ping_pc - Checa se o desktop esta ligado\n"
-    "restart_bot - Reinicia o bot"
+    "limpar_conversa - Limpa conversa do Claude\n"
+    "stop - Para o comando em andamento\n"
+    "ping_pc - Checa se o desktop esta ligado"
 )
 
 DEFAULT_TIMEOUT = 120

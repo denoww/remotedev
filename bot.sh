@@ -79,6 +79,34 @@ escolher_bot() {
     echo "${bots[$idx]}"
 }
 
+print_box() {
+    # Desenha caixa com bordas alinhadas automaticamente
+    # Uso: print_box "linha 1" "linha 2" ...
+    local lines=("$@")
+    local widths=()
+    local max_w=0
+    for line in "${lines[@]}"; do
+        local w=$(printf '%s' "$line" | python3 -c "
+import sys, unicodedata
+s = sys.stdin.read()
+print(sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in s))
+")
+        widths+=("$w")
+        [ "$w" -gt "$max_w" ] && max_w=$w
+    done
+    local border=$(printf '━%.0s' $(seq 1 $((max_w + 4))))
+    echo "  ┏${border}┓"
+    local i=0
+    for line in "${lines[@]}"; do
+        local w=${widths[$i]}
+        local pad=""
+        [ $((max_w - w)) -gt 0 ] && pad=$(printf ' %.0s' $(seq 1 $((max_w - w))))
+        echo "  ┃  ${line}${pad}  ┃"
+        i=$((i + 1))
+    done
+    echo "  ┗${border}┛"
+}
+
 salvar_env_bashrc() {
     local var_name="$1"
     local var_value="$2"
@@ -91,9 +119,7 @@ salvar_env_bashrc() {
 
 cmd_install() {
     echo ""
-    echo "  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-    echo "  ┃  📦 INSTALAÇÃO DE NOVO BOT                    ┃"
-    echo "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+    print_box "📦 INSTALAÇÃO DE NOVO BOT"
     echo ""
 
     # Verificar venv
@@ -187,28 +213,29 @@ cmd_install() {
         exit 1
     fi
 
+    # Validar token com a API do Telegram
+    TOKEN_RESPONSE=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe")
+    TOKEN_OK=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ok', False))" 2>/dev/null || echo "False")
+
+    if [ "$TOKEN_OK" != "True" ]; then
+        TOKEN_ERR=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('description', 'Resposta inválida'))" 2>/dev/null || echo "Não foi possível conectar à API do Telegram")
+        echo "  ❌ Token inválido: $TOKEN_ERR"
+        exit 1
+    fi
+
+    BOT_USERNAME=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['username'])" 2>/dev/null || echo "")
+
     # Salvar token no bashrc
     salvar_env_bashrc "$TOKEN_VAR" "$BOT_TOKEN"
     export "$TOKEN_VAR=$BOT_TOKEN"
-    echo "  ✅ Token salvo"
-
-    # Descobrir username do bot
-    BOT_USERNAME=$(curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['username'])" 2>/dev/null || echo "")
+    echo "  ✅ Token válido ($BOT_USERNAME)"
 
     # ── Etapa 4: Chat ID ───────────────────────────────────────────
     echo ""
     echo "  ── Etapa 4/5: Chat ID ──"
     echo ""
     if [ -n "$BOT_USERNAME" ]; then
-        echo "  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-        echo "  ┃                                              ┃"
-        echo "  ┃  👉 ABRA O BOT NO TELEGRAM:                 ┃"
-        echo "  ┃                                              ┃"
-        echo "  ┃     https://t.me/$BOT_USERNAME"
-        echo "  ┃                                              ┃"
-        echo "  ┃  E mande qualquer mensagem.                  ┃"
-        echo "  ┃                                              ┃"
-        echo "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        print_box "" "👉 ABRA O BOT NO TELEGRAM:" "" "   https://t.me/$BOT_USERNAME" "" "E mande qualquer mensagem." ""
     else
         echo "  Mande qualquer mensagem pro bot e aguarde..."
     fi
@@ -358,9 +385,7 @@ EOF
 
     # ── Resultado ───────────────────────────────────────────────────
     echo ""
-    echo "  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-    echo "  ┃  ✅ Bot [$BOT_NOME] instalado e rodando!      ┃"
-    echo "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+    print_box "✅ Bot [$BOT_NOME] instalado e rodando!"
     echo ""
     echo "  Abra o Telegram e envie /start pro bot."
     echo "  Comandos são registrados automaticamente ao iniciar."
