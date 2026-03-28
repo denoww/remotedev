@@ -22,7 +22,7 @@ BOT_NOME, TOKEN, CHAT_ID = carregar_config()
 BOT_SERVICE = f"remotedev-{BOT_NOME}"
 BOT_REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-WORKSPACE = os.path.expanduser("~/workspace")
+WORKSPACE = os.environ.get("REMOTEDEV_WORKSPACE", os.path.expanduser("~/workspace"))
 
 def descobrir_projetos(workspace: str) -> dict:
     """Varre a pasta workspace e retorna todos os diretórios como projetos."""

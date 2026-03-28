@@ -113,6 +113,33 @@ cmd_install() {
         exit 1
     fi
 
+    # Pasta dos projetos
+    if [ "$(uname)" = "Darwin" ]; then
+        DEFAULT_WORKSPACE="$HOME/Developer"
+    else
+        DEFAULT_WORKSPACE="$HOME/workspace"
+    fi
+    [ -n "${REMOTEDEV_WORKSPACE:-}" ] && DEFAULT_WORKSPACE="$REMOTEDEV_WORKSPACE"
+
+    read -p "Pasta dos projetos [$DEFAULT_WORKSPACE]: " WORKSPACE_INPUT
+    WORKSPACE="${WORKSPACE_INPUT:-$DEFAULT_WORKSPACE}"
+
+    if [ ! -d "$WORKSPACE" ]; then
+        read -p "Pasta '$WORKSPACE' não existe. Criar? (s/N): " criar_ws
+        if [ "$criar_ws" = "s" ] || [ "$criar_ws" = "S" ]; then
+            mkdir -p "$WORKSPACE"
+            echo "✅ Pasta criada: $WORKSPACE"
+        else
+            echo "❌ Abortado."
+            exit 1
+        fi
+    fi
+
+    salvar_env_bashrc "REMOTEDEV_WORKSPACE" "$WORKSPACE"
+    export "REMOTEDEV_WORKSPACE=$WORKSPACE"
+    echo "✅ Workspace: $WORKSPACE"
+    echo ""
+
     # Nome do bot
     local DEFAULT_BOT="botdev"
     read -p "Nome do bot [$DEFAULT_BOT]: " BOT_NOME
@@ -240,7 +267,8 @@ $TOKEN_VAR=$BOT_TOKEN
 $CHAT_ID_VAR=$BOT_CHAT_ID
 EOF
 
-    # PATH para o systemd encontrar binários como claude
+    # Workspace e PATH para o systemd
+    echo "REMOTEDEV_WORKSPACE=$WORKSPACE" >> "$SERVICE_DIR/$SERVICE_NAME.env"
     echo "PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" >> "$SERVICE_DIR/$SERVICE_NAME.env"
 
     if [ -n "$OPENAI_KEY" ]; then
@@ -499,8 +527,18 @@ cmd_setup_ec2() {
     fi
 
     # Criar workspace se não existir
-    mkdir -p "$WORKSPACE"
-    echo "✅ Workspace: $WORKSPACE"
+    if [ "$(uname)" = "Darwin" ]; then
+        DEFAULT_WORKSPACE="$HOME/Developer"
+    else
+        DEFAULT_WORKSPACE="$HOME/workspace"
+    fi
+    [ -n "${REMOTEDEV_WORKSPACE:-}" ] && DEFAULT_WORKSPACE="$REMOTEDEV_WORKSPACE"
+
+    read -p "Pasta dos projetos [$DEFAULT_WORKSPACE]: " WORKSPACE_INPUT
+    SETUP_WORKSPACE="${WORKSPACE_INPUT:-$DEFAULT_WORKSPACE}"
+    mkdir -p "$SETUP_WORKSPACE"
+    salvar_env_bashrc "REMOTEDEV_WORKSPACE" "$SETUP_WORKSPACE"
+    echo "✅ Workspace: $SETUP_WORKSPACE"
 
     # Habilitar systemd para user
     if command -v loginctl &>/dev/null; then
@@ -513,7 +551,7 @@ cmd_setup_ec2() {
     echo "✅ Setup concluído!"
     echo ""
     echo "Próximos passos:"
-    echo "  1. Clone seus projetos em ~/workspace/"
+    echo "  1. Clone seus projetos em $SETUP_WORKSPACE/"
     echo "  2. Rode: ./bot.sh install"
     echo "══════════════════════════════════════════"
 }
