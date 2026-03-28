@@ -498,6 +498,13 @@ def main():
     app.add_handler(CommandHandler("gitpush", cmd_push))
     app.add_handler(CommandHandler("restart_bot", cmd_restart))
 
+    # Comando desconhecido
+    @autorizado
+    async def cmd_desconhecido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        cmd = update.message.text.split()[0]
+        await update.message.reply_text(f"Comando {cmd} não existe. Use /start pra ver os disponíveis.")
+    app.add_handler(MessageHandler(filters.COMMAND, cmd_desconhecido))
+
     # Mensagens
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_livre))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, mensagem_audio))
