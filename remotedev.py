@@ -51,7 +51,7 @@ from lib.hooks import pos_push
 # ══════════════════════════════════════════════════════════════════════
 
 @autorizado
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     label = projeto_label(chat_id)
 
@@ -231,7 +231,7 @@ async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @autorizado
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await exigir_projeto(update):
         return
 
@@ -487,11 +487,12 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_reset, pattern=r"^reset:"))
 
     # Comandos
-    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("start", cmd_menu))
+    app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("ping_pc", cmd_ping_pc))
     app.add_handler(CommandHandler("bash", cmd_bash))
     app.add_handler(CommandHandler("limpar_conversa", cmd_new_session))
-    app.add_handler(CommandHandler("stop", cmd_stop))
+    app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CommandHandler("gitdiff", cmd_diff))
     app.add_handler(CommandHandler("gitreset", cmd_gitreset))
     app.add_handler(CommandHandler("gitbranch", cmd_gitbranch))
@@ -502,7 +503,7 @@ def main():
     @autorizado
     async def cmd_desconhecido(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cmd = update.message.text.split()[0]
-        await update.message.reply_text(f"Comando {cmd} não existe. Use /start pra ver os disponíveis.")
+        await update.message.reply_text(f"Comando {cmd} não existe. Use /menu pra ver os disponíveis.")
     app.add_handler(MessageHandler(filters.COMMAND, cmd_desconhecido))
 
     # Mensagens

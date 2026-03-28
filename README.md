@@ -22,7 +22,7 @@ Simples e fácil:
 
 ## Comandos disponíveis no Telegram
 
-Vá no Telegram e digite `/start` ou `/` para ver os comandos. Eles são registrados automaticamente ao iniciar o bot.
+Vá no Telegram e digite `/menu` ou `/` para ver os comandos. Eles são registrados automaticamente ao iniciar o bot.
 
 ## Gerenciar bots (comandos no computador)
 
