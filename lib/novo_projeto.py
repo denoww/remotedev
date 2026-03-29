@@ -31,6 +31,7 @@ def validar_nome_projeto(nome: str) -> bool:
     return bool(re.match(r'^[a-z][a-z0-9_-]*$', nome))
 
 
+
 async def criar_projeto(nome: str, chat_id: int, msg):
     """Cria projeto Next.js completo com GitHub repo."""
     projeto_dir = os.path.join(WORKSPACE, nome)
@@ -46,7 +47,7 @@ async def criar_projeto(nome: str, chat_id: int, msg):
             "pnpm", "create", "next-app@latest", projeto_dir,
             "--typescript", "--tailwind", "--app", "--use-pnpm",
             "--eslint", "--no-src-dir", "--no-import-alias", "--turbopack",
-            "--no-react-compiler",
+            "--no-react-compiler", "--no-agents-md", "--yes",
         ]),
     ]
 
@@ -62,6 +63,15 @@ async def criar_projeto(nome: str, chat_id: int, msg):
             erro = stderr.decode().strip() or stdout.decode().strip()
             await msg.reply_text(f"Erro ao criar projeto:\n<pre>{html.escape(erro[:2000])}</pre>", parse_mode="HTML")
             return
+
+    # Verificar se o diretório foi criado
+    if not os.path.exists(projeto_dir):
+        await msg.reply_text(
+            f"❌ Erro: diretório <code>{nome}</code> não foi criado pelo create-next-app.\n"
+            "Pode ser que o comando tenha pedido input interativo não suportado.",
+            parse_mode="HTML",
+        )
+        return
 
     # Instalar dependências extras
     await msg.reply_text("📦 Instalando Zod + Biome + shadcn...")
