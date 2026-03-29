@@ -33,7 +33,7 @@ from lib.config import (
 from lib.utils import (
     estado, pendente, push_pendente, novo_projeto_pendente,
     projeto_ativo, projeto_config, projeto_path, projeto_label, resumo_git,
-    exigir_projeto, autorizado, rodar, enviar_resultado,
+    exigir_projeto, autorizado, rodar, rodar_async, enviar_resultado,
 )
 from lib.claude import (
     claude_sessions, claude_cancelado,

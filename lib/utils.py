@@ -1,4 +1,5 @@
 import os
+import asyncio
 import subprocess
 import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -112,6 +113,11 @@ def rodar(cmd: str, cwd: str = None, timeout: int = DEFAULT_TIMEOUT) -> dict:
         return {"stdout": "", "stderr": f"⏰ Timeout após {timeout}s", "code": -1, "truncated": False}
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "code": -1, "truncated": False}
+
+
+async def rodar_async(cmd: str, cwd: str = None, timeout: int = DEFAULT_TIMEOUT) -> dict:
+    """Versão async de rodar() — não bloqueia o event loop."""
+    return await asyncio.to_thread(rodar, cmd, cwd, timeout)
 
 
 def formatar_resultado(res: dict, cmd: str, chat_id: int) -> str:
