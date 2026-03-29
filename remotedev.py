@@ -31,7 +31,7 @@ from lib.config import (
     PROJETOS, BOTFATHER_COMMANDS,
 )
 from lib.utils import (
-    estado, pendente, push_pendente,
+    estado, pendente, push_pendente, novo_projeto_pendente,
     projeto_ativo, projeto_config, projeto_path, projeto_label, resumo_git,
     exigir_projeto, autorizado, rodar, enviar_resultado,
 )
@@ -44,6 +44,7 @@ from lib.git_ops import (
     callback_branch, callback_push, callback_reset, _enviar_diff, _gerar_commit_ia, git_push,
 )
 from lib.hooks import pos_push
+from lib.novo_projeto import callback_novo_projeto, criar_projeto, validar_nome_projeto
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -97,6 +98,7 @@ async def cmd_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{cfg['nome']}{marcador}",
             callback_data=f"projeto:{key}",
         )])
+    teclado.append([InlineKeyboardButton("➕ Novo Projeto", callback_data="novo_projeto")])
 
     await update.message.reply_text(
         "Selecione o projeto:",
@@ -232,6 +234,12 @@ async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @autorizado
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in novo_projeto_pendente:
+        del novo_projeto_pendente[chat_id]
+        await update.message.reply_text("Criação de projeto cancelada.")
+        return
+
     if not await exigir_projeto(update):
         return
 
@@ -298,6 +306,23 @@ async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text.strip()
     if not texto:
         return
+
+    chat_id = update.effective_chat.id
+
+    # Fluxo: aguardando nome do novo projeto
+    if chat_id in novo_projeto_pendente:
+        del novo_projeto_pendente[chat_id]
+        nome = texto.lower().strip()
+        if not validar_nome_projeto(nome):
+            await update.message.reply_text(
+                "Nome inválido. Use apenas letras minúsculas, números e hífens.\n"
+                "Ex: <code>meu-app</code>",
+                parse_mode="HTML",
+            )
+            return
+        await criar_projeto(nome, chat_id, update.message)
+        return
+
     if not await exigir_projeto(update):
         return
     await enviar_para_claude(update, texto)
@@ -509,6 +534,7 @@ def main():
     # Projeto
     app.add_handler(CommandHandler("p", cmd_projeto))
     app.add_handler(CommandHandler("projeto", cmd_projeto))
+    app.add_handler(CallbackQueryHandler(callback_novo_projeto, pattern=r"^novo_projeto$"))
     app.add_handler(CallbackQueryHandler(callback_projeto, pattern=r"^projeto:"))
     app.add_handler(CallbackQueryHandler(callback_branch, pattern=r"^branch:"))
     app.add_handler(CallbackQueryHandler(callback_push, pattern=r"^push:"))

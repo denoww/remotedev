@@ -27,6 +27,8 @@ Vá no Telegram e digite `/menu` ou `/` para ver os comandos. Eles são registra
 ## Gerenciar bots (comandos no computador)
 
 ```bash
+./bot.sh help                    # mostra todos os comandos
+./bot.sh setup_ec2               # setup inicial para EC2/servidor
 ./bot.sh list                    # lista bots instalados
 ./bot.sh status                  # status de todos os bots
 ./bot.sh restart                 # reinicia um bot
