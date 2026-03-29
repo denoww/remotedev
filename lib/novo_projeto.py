@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import json
 import asyncio
 import socket
 
@@ -119,6 +120,18 @@ async def criar_projeto(nome: str, chat_id: int, msg):
                 parse_mode="HTML",
             )
 
+    # Alocar porta para o dev server (nunca usar 3000)
+    porta = _proxima_porta_livre()
+
+    # Fixar porta do dev server no package.json
+    pkg_path = os.path.join(projeto_dir, "package.json")
+    with open(pkg_path) as f:
+        pkg = json.load(f)
+    pkg["scripts"]["dev"] = f"next dev --turbopack --port {porta}"
+    with open(pkg_path, "w") as f:
+        json.dump(pkg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
     # Gerar CLAUDE.md
     claude_md = f"""# {nome}
 
@@ -135,11 +148,13 @@ Projeto Next.js (App Router) com TypeScript, Tailwind CSS, shadcn/ui e Zod.
 ## Comandos
 
 ```bash
-pnpm dev          # servidor de desenvolvimento
+pnpm dev          # servidor de desenvolvimento (porta {porta})
 pnpm build        # build de produção
 pnpm lint         # linter (Next.js)
 pnpm biome check  # linter + formatter (Biome)
 ```
+
+**Porta do dev server: {porta}** — nunca use a porta 3000.
 
 ## Convenções
 
@@ -150,13 +165,21 @@ pnpm biome check  # linter + formatter (Biome)
 
 ## URL Pública
 
-Quando o usuário pedir uma URL pública (para testar no celular, compartilhar, etc), gere uma nova URL com localtunnel e envie de forma fácil de clicar/copiar:
+Quando o usuário pedir uma URL pública (para testar no celular, compartilhar, etc):
 
+1. Mate qualquer tunnel anterior (não trava se não existir):
 ```bash
-npx localtunnel --port <porta_do_dev_server>
+pkill -f 'localtunnel' 2>/dev/null || true
 ```
 
-A porta padrão do dev server é a configurada no `package.json` ou a usada no `pnpm dev`. Envie a URL resultante de forma clara e clicável.
+2. Inicie um novo tunnel em background e capture a URL:
+```bash
+npx --yes localtunnel --port {porta} &
+```
+
+Envie a URL resultante de forma clara e clicável.
+
+**Importante:** Sempre use `npx --yes` (nunca `npx` sem `--yes`) para evitar prompts interativos. E sempre use `|| true` após `pkill` para não travar se o processo não existir.
 """
     with open(os.path.join(projeto_dir, "CLAUDE.md"), "w") as f:
         f.write(claude_md)
@@ -192,11 +215,10 @@ A porta padrão do dev server é a configurada no `package.json` ou a usada no `
         await proc.communicate()
 
     # Iniciar dev server + tunnel público
-    porta = _proxima_porta_livre()
     await msg.reply_text(f"🌐 Iniciando servidor dev (porta {porta}) + tunnel público...")
     try:
         dev_proc = await asyncio.create_subprocess_exec(
-            "pnpm", "dev", "--port", str(porta),
+            "pnpm", "dev",
             cwd=projeto_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -205,7 +227,7 @@ A porta padrão do dev server é a configurada no `package.json` ou a usada no `
         await asyncio.sleep(4)  # esperar o dev server subir
 
         tunnel_proc = await asyncio.create_subprocess_exec(
-            "npx", "localtunnel", "--port", str(porta),
+            "npx", "--yes", "localtunnel", "--port", str(porta),
             cwd=projeto_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
