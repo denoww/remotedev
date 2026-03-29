@@ -531,12 +531,16 @@ async def callback_ia_analise(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💻 Claude Code (computador)", callback_data=f"ia_provider:claudecode:{nome}")],
         [InlineKeyboardButton("🔷 Gemini", callback_data=f"ia_provider:gemini:{nome}")],
         [InlineKeyboardButton("🟢 OpenAI", callback_data=f"ia_provider:openai:{nome}")],
         [InlineKeyboardButton("🟠 Anthropic (Claude API)", callback_data=f"ia_provider:anthropic:{nome}")],
     ])
     await query.edit_message_text(
-        "Qual provider de IA você quer usar?",
+        "Qual provider de IA você quer usar?\n\n"
+        "💻 <b>Claude Code</b> — usa o CLI local do computador (plano Max, sem custo extra de API)\n"
+        "🔷🟢🟠 — usam API key do provider (créditos à parte)",
+        parse_mode="HTML",
         reply_markup=teclado,
     )
 
@@ -547,6 +551,13 @@ async def callback_ia_provider(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     _, provider, nome = query.data.split(":", 2)
+
+    # Claude Code CLI — não precisa de API key, vai direto
+    if provider == "claudecode":
+        chat_id = update.effective_chat.id
+        await query.edit_message_text("💻 Configurando Claude Code CLI...")
+        await _finalizar_config_claudecode(chat_id, nome, msg=query.message)
+        return
 
     info = _IA_PROVIDERS[provider]
     chat_id = update.effective_chat.id
@@ -755,6 +766,19 @@ Quando o usuário pedir para analisar dados, usar a API do {info['nome']} para p
 A API key está disponível via `process.env.{info['env_var']}`.
 {f"O modelo a usar está em `process.env.{info['env_var'].replace('_API_KEY', '')}_MODEL`." if modelo else ""}
 
+### Feedback em tempo real para o usuário
+
+**IMPORTANTE:** Chamadas de IA com busca web ou processamento longo DEVEM dar feedback visual ao usuário para que ele não pense que a aplicação travou.
+
+- Use **streaming** (Server-Sent Events ou NDJSON) para enviar o texto conforme a IA gera
+- Envie **eventos de status** separados do texto, indicando o que a IA está fazendo:
+  - "Conectando com a IA..."
+  - "Buscando na web (1/N): ..."
+  - "Processando resultados..."
+  - "Escrevendo análise..."
+- No frontend, exiba esses status em um **indicador visual** (barra ou badge) acima do resultado
+- NUNCA deixe a tela parada sem feedback por mais de 2-3 segundos durante uma chamada de IA
+
 ### Exemplos de análise que podem ser solicitadas
 
 - Análise de tendências e padrões nos dados
@@ -773,5 +797,80 @@ A API key está disponível via `process.env.{info['env_var']}`.
         f"🔑 <b>Env:</b> <code>{info['env_var']}</code>\n"
         f"📦 <b>SDK:</b> <code>{info['pacote']}</code>\n\n"
         f"A API key foi salva no <code>.env</code> e a estrutura de análise foi adicionada ao <code>CLAUDE.md</code>.",
+        parse_mode="HTML",
+    )
+
+
+async def _finalizar_config_claudecode(chat_id: int, nome: str, msg):
+    """Configura o projeto para usar Claude Code CLI (computador local) em vez de API."""
+    projeto_dir = os.path.join(WORKSPACE, nome)
+    claude_md_path = os.path.join(projeto_dir, "CLAUDE.md")
+
+    secao_ia = f"""
+
+## Análise de Dados com IA
+
+Este projeto usa o **Claude Code CLI** (computador local) para análise de dados.
+Isso utiliza o plano Max do usuário, sem custo extra de API.
+
+- **Provider:** Claude Code CLI (local)
+- **Comando:** `claude -p`
+- **Sem necessidade de API key** — usa a autenticação do Claude Code instalado na máquina
+
+### Como usar
+
+Para chamadas de IA nas API routes, usar o Claude Code CLI via `spawn`:
+
+```typescript
+import {{ spawn }} from "node:child_process";
+
+const claudePath = `${{process.env.HOME}}/.local/bin/claude`;
+const proc = spawn(claudePath, [
+  "-p", prompt,
+  "--output-format", "stream-json",
+  "--verbose",
+  "--allowedTools", "WebSearch,WebFetch",
+], {{
+  env: {{ ...process.env, PATH: `${{process.env.HOME}}/.local/bin:${{process.env.PATH}}` }},
+  stdio: ["pipe", "pipe", "pipe"],
+}});
+```
+
+O stream JSON retorna eventos:
+- `{{"type":"assistant","message":{{"content":[{{"type":"text","text":"..."}}]}}}}` → texto
+- `{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"WebSearch"}}]}}}}` → busca web
+- `{{"type":"result","result":"..."}}` → resultado final
+
+### Feedback em tempo real para o usuário
+
+**IMPORTANTE:** Chamadas de IA com busca web ou processamento longo DEVEM dar feedback visual ao usuário para que ele não pense que a aplicação travou.
+
+- Use **streaming** (NDJSON) para enviar o texto conforme a IA gera
+- Envie **eventos de status** separados do texto, indicando o que a IA está fazendo:
+  - "Conectando com a IA..."
+  - "Buscando na web (1/N): ..."
+  - "Processando resultados..."
+  - "Escrevendo análise..."
+- No frontend, exiba esses status em um **indicador visual** (barra ou badge) acima do resultado
+- NUNCA deixe a tela parada sem feedback por mais de 2-3 segundos durante uma chamada de IA
+
+### Exemplos de análise que podem ser solicitadas
+
+- Análise de tendências e padrões nos dados
+- Resumos e insights a partir de datasets
+- Classificação e categorização de informações
+- Geração de relatórios baseados em dados
+"""
+    if os.path.exists(claude_md_path):
+        with open(claude_md_path, "a") as f:
+            f.write(secao_ia)
+
+    await msg.reply_text(
+        f"✅ IA configurada!\n\n"
+        f"💻 <b>Provider:</b> Claude Code CLI (computador local)\n"
+        f"🔑 <b>API key:</b> não necessária\n"
+        f"📦 <b>Comando:</b> <code>claude -p</code>\n\n"
+        f"Usa o plano Max do Claude Code — sem custo extra de API.\n"
+        f"Instruções adicionadas ao <code>CLAUDE.md</code>.",
         parse_mode="HTML",
     )
