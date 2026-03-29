@@ -59,7 +59,7 @@ def validar_nome_projeto(nome: str) -> bool:
 
 
 async def criar_projeto(nome: str, chat_id: int, msg):
-    """Cria projeto Next.js completo com GitHub repo."""
+    """Cria projeto vinext (Vite + Cloudflare) completo com GitHub repo."""
     projeto_dir = os.path.join(WORKSPACE, nome)
 
     if os.path.exists(projeto_dir):
@@ -68,47 +68,60 @@ async def criar_projeto(nome: str, chat_id: int, msg):
 
     await msg.reply_text(f"⏳ Criando projeto <b>{nome}</b>...\nIsso pode levar alguns minutos.", parse_mode="HTML")
 
-    passos = [
-        ("Criando Next.js + TypeScript + Tailwind...", [
-            "pnpm", "create", "next-app@latest", projeto_dir,
-            "--typescript", "--tailwind", "--app", "--use-pnpm",
-            "--eslint", "--no-src-dir", "--no-import-alias", "--turbopack",
-            "--no-react-compiler", "--no-agents-md", "--yes",
-        ]),
-    ]
+    # 1) Scaffold base via create-next-app (vinext init precisa dele)
+    proc = await asyncio.create_subprocess_exec(
+        "pnpm", "create", "next-app@latest", projeto_dir,
+        "--typescript", "--tailwind", "--app", "--use-pnpm",
+        "--no-eslint", "--no-src-dir", "--no-import-alias",
+        "--no-react-compiler", "--no-agents-md", "--yes",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_ENV,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        erro = stderr.decode().strip() or stdout.decode().strip()
+        await msg.reply_text(f"Erro ao criar projeto:\n<pre>{html.escape(erro[:2000])}</pre>", parse_mode="HTML")
+        return
 
-    for descricao, cmd in passos:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_ENV,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            erro = stderr.decode().strip() or stdout.decode().strip()
-            await msg.reply_text(f"Erro ao criar projeto:\n<pre>{html.escape(erro[:2000])}</pre>", parse_mode="HTML")
-            return
-
-    # Verificar se o diretório foi criado
     if not os.path.exists(projeto_dir):
         await msg.reply_text(
-            f"❌ Erro: diretório <code>{nome}</code> não foi criado pelo create-next-app.\n"
+            f"❌ Erro: diretório <code>{nome}</code> não foi criado.\n"
             "Pode ser que o comando tenha pedido input interativo não suportado.",
             parse_mode="HTML",
         )
         return
 
-    # Instalar dependências extras
+    # Alocar porta para o dev server (nunca usar 3000)
+    porta = _proxima_porta_livre()
+
+    # 2) Converter para vinext (Vite + Cloudflare Workers)
+    await msg.reply_text("☁️ Convertendo para vinext...")
+    proc = await asyncio.create_subprocess_exec(
+        "pnpm", "dlx", "vinext", "init", "--port", str(porta), "--force",
+        cwd=projeto_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_ENV,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        erro = stderr.decode().strip() or stdout.decode().strip()
+        await msg.reply_text(
+            f"⚠️ Aviso ao converter para vinext:\n<pre>{html.escape(erro[:1500])}</pre>",
+            parse_mode="HTML",
+        )
+
+    # 3) Instalar ferramentas: Zod, Biome, shadcn/ui
     await msg.reply_text("📦 Instalando Zod + Biome + shadcn...")
     extras = [
-        (["pnpm", "add", "zod"], projeto_dir),
-        (["pnpm", "add", "-D", "@biomejs/biome"], projeto_dir),
-        (["pnpm", "dlx", "shadcn@latest", "init", "-y", "--defaults"], projeto_dir),
+        ["pnpm", "add", "zod"],
+        ["pnpm", "add", "-D", "@biomejs/biome"],
+        ["pnpm", "dlx", "shadcn@latest", "init", "-y", "--defaults"],
     ]
-    for cmd, cwd in extras:
+    for cmd in extras:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd,
+            *cmd, cwd=projeto_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=_ENV,
@@ -121,26 +134,31 @@ async def criar_projeto(nome: str, chat_id: int, msg):
                 parse_mode="HTML",
             )
 
-    # Alocar porta para o dev server (nunca usar 3000)
-    porta = _proxima_porta_livre()
-
-    # Fixar porta do dev server no package.json
+    # 4) Fixar scripts vinext no package.json (vinext init cria dev:vinext, queremos dev)
     pkg_path = os.path.join(projeto_dir, "package.json")
     with open(pkg_path) as f:
         pkg = json.load(f)
-    pkg["scripts"]["dev"] = f"next dev --turbopack --port {porta}"
+    pkg["scripts"]["dev"] = f"vinext dev --port {porta}"
+    pkg["scripts"]["build"] = "vinext build"
+    pkg["scripts"]["start"] = "vinext start"
+    pkg["scripts"]["deploy"] = "vinext deploy"
+    pkg["scripts"]["deploy:preview"] = "vinext deploy --preview"
+    pkg["scripts"]["check"] = "biome check --write ."
+    # Remover scripts legado do Next.js/vinext init
+    for chave in ("dev:vinext", "lint"):
+        pkg["scripts"].pop(chave, None)
     with open(pkg_path, "w") as f:
         json.dump(pkg, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    # Gerar CLAUDE.md
+    # 5) Gerar CLAUDE.md
     claude_md = f"""# {nome}
 
-Projeto Next.js (App Router) com TypeScript, Tailwind CSS, shadcn/ui e Zod.
+Projeto vinext (Vite + Cloudflare Workers) com TypeScript, Tailwind CSS, shadcn/ui e Zod.
 
 ## Stack
 
-- **Framework:** Next.js (App Router) + TypeScript
+- **Framework:** vinext (Vite, deploy no Cloudflare Workers)
 - **UI:** Tailwind CSS + shadcn/ui
 - **Validação:** Zod
 - **Linter/Formatter:** Biome
@@ -149,10 +167,11 @@ Projeto Next.js (App Router) com TypeScript, Tailwind CSS, shadcn/ui e Zod.
 ## Comandos
 
 ```bash
-pnpm dev          # servidor de desenvolvimento (porta {porta})
-pnpm build        # build de produção
-pnpm lint         # linter (Next.js)
-pnpm biome check  # linter + formatter (Biome)
+pnpm dev              # servidor de desenvolvimento (porta {porta})
+pnpm build            # build de produção
+pnpm check            # linter + formatter (Biome, com auto-fix)
+pnpm deploy           # deploy para Cloudflare Workers
+pnpm deploy:preview   # deploy para ambiente preview
 ```
 
 **Porta do dev server: {porta}** — nunca use a porta 3000.
@@ -172,7 +191,7 @@ Quando o usuário pedir para ligar o servidor, URL pública, ou testar o app:
 
 ```bash
 # Matar processos anteriores SOMENTE deste projeto (pela porta {porta})
-pkill -f 'next dev.*--port {porta}' 2>/dev/null || true
+pkill -f 'vinext dev.*--port {porta}' 2>/dev/null || true
 pkill -f 'ngrok http.*--name {nome}' 2>/dev/null || true
 sleep 1
 
@@ -208,7 +227,7 @@ Depois, envie a URL pública de forma clara e clicável.
     with open(os.path.join(projeto_dir, "CLAUDE.md"), "w") as f:
         f.write(claude_md)
 
-    # Configurar Biome
+    # 6) Configurar Biome
     biome_config = """{
   "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
   "formatter": {
@@ -227,7 +246,7 @@ Depois, envie a URL pública de forma clara e clicável.
     await msg.reply_text("🔧 Configurando Git...")
     git_cmds = [
         ["git", "add", "."],
-        ["git", "commit", "-m", "feat: init projeto com Next.js + TS + Tailwind + shadcn + Zod + Biome"],
+        ["git", "commit", "-m", "feat: init projeto com vinext + TS + Tailwind + shadcn + Zod + Biome"],
     ]
     for cmd in git_cmds:
         proc = await asyncio.create_subprocess_exec(
@@ -314,7 +333,7 @@ async def callback_github_novo(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text(
             f"✅ Projeto <b>{nome}</b> criado apenas localmente.\n\n"
             f"📁 <code>{os.path.join(WORKSPACE, nome)}</code>\n"
-            f"Stack: Next.js + TS + Tailwind + shadcn/ui + Zod + Biome",
+            f"Stack: vinext + TS + Tailwind + shadcn/ui + Zod + Biome",
             parse_mode="HTML",
         )
         return

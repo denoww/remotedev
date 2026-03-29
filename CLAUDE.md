@@ -9,7 +9,7 @@ Bot Telegram para controle remoto de projetos no desktop. Permite executar coman
 - `lib/claude.py` — Integração com Claude Code (sessões, execução)
 - `lib/git_ops.py` — Operações git (diff, push, branch, reset, commit com IA)
 - `lib/hooks.py` — Hooks pós-push
-- `lib/novo_projeto.py` — Criação de projetos Next.js (scaffold, GitHub, config)
+- `lib/novo_projeto.py` — Criação de projetos vinext (scaffold, GitHub, config)
 - `lib/utils.py` — Utilitários (estado, autorização, execução de comandos)
 - `bot.sh` — Script de gerenciamento (install/uninstall/restart/logs)
 
