@@ -163,23 +163,39 @@ pnpm biome check  # linter + formatter (Biome)
 - Componentes de UI (shadcn) em `components/ui/`
 - Páginas no App Router em `app/`
 
-## URL Pública
+## Ligar servidor e URL pública
 
-Quando o usuário pedir uma URL pública (para testar no celular, compartilhar, etc):
+Quando o usuário pedir para ligar o servidor, URL pública, ou testar o app:
 
-1. Mate qualquer tunnel anterior (não trava se não existir):
+**Execute os comandos abaixo EM UMA ÚNICA chamada bash, todos juntos:**
+
 ```bash
+# Matar processos anteriores (se houver)
+pkill -f 'next dev' 2>/dev/null || true
 pkill -f 'localtunnel' 2>/dev/null || true
+sleep 1
+
+# Iniciar dev server em background
+nohup pnpm dev > /tmp/{nome}-dev.log 2>&1 &
+sleep 4
+
+# Verificar se o servidor subiu
+curl -s -o /dev/null -w "%{{http_code}}" http://localhost:{porta}
+
+# Iniciar tunnel e capturar URL
+nohup npx --yes localtunnel --port {porta} > /tmp/{nome}-tunnel.log 2>&1 &
+sleep 5
+cat /tmp/{nome}-tunnel.log
 ```
 
-2. Inicie um novo tunnel em background e capture a URL:
-```bash
-npx --yes localtunnel --port {porta} &
-```
+Depois, envie a URL do tunnel de forma clara e clicável.
 
-Envie a URL resultante de forma clara e clicável.
-
-**Importante:** Sempre use `npx --yes` (nunca `npx` sem `--yes`) para evitar prompts interativos. E sempre use `|| true` após `pkill` para não travar se o processo não existir.
+**Regras importantes:**
+- Sempre rode TODOS os comandos numa única chamada bash — se separar, os processos background morrem
+- Sempre use `nohup ... &` para processos de longa duração
+- Sempre use `npx --yes` (nunca sem `--yes`) para evitar prompts interativos
+- Sempre use `|| true` após `pkill` para não travar se o processo não existir
+- Se o curl retornar 000, espere mais alguns segundos e tente novamente
 """
     with open(os.path.join(projeto_dir, "CLAUDE.md"), "w") as f:
         f.write(claude_md)
