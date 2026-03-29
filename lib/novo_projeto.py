@@ -173,7 +173,7 @@ Quando o usuário pedir para ligar o servidor, URL pública, ou testar o app:
 ```bash
 # Matar processos anteriores SOMENTE deste projeto (pela porta {porta})
 pkill -f 'next dev.*--port {porta}' 2>/dev/null || true
-pkill -f 'ngrok http {porta}' 2>/dev/null || true
+pkill -f 'ngrok http.*--name {nome}' 2>/dev/null || true
 sleep 1
 
 # Iniciar dev server em background
@@ -183,15 +183,15 @@ sleep 4
 # Verificar se o servidor subiu
 curl -s -o /dev/null -w "%{{http_code}}" http://localhost:{porta}
 
-# Iniciar ngrok e capturar URL via API
-nohup ngrok http {porta} --log /tmp/{nome}-ngrok.log > /dev/null 2>&1 &
+# Iniciar ngrok com --name para identificar o projeto
+nohup ngrok http {porta} --name {nome} --log /tmp/{nome}-ngrok.log > /dev/null 2>&1 &
 sleep 3
 
-# Pegar URL pública via API do ngrok (confiável, não trava)
+# Pegar URL pública via API do ngrok (filtrando pelo name do projeto)
 curl -s http://localhost:4040/api/tunnels | python3 -c "
 import sys, json
 for t in json.load(sys.stdin)['tunnels']:
-    if ':{porta}' in t['config']['addr']:
+    if t.get('name') == '{nome}':
         print(t['public_url']); break
 "
 ```
@@ -201,7 +201,7 @@ Depois, envie a URL pública de forma clara e clicável.
 **Regras importantes:**
 - Sempre rode TODOS os comandos numa única chamada bash — se separar, os processos background morrem
 - Sempre use `nohup ... &` para processos de longa duração
-- NUNCA mate processos genéricos (ex: `pkill -f ngrok`) — sempre filtre pela porta {porta} para não afetar outros projetos
+- NUNCA mate processos genéricos (ex: `pkill -f ngrok`) — sempre filtre pelo name `{nome}` para não afetar outros projetos
 - Sempre use `|| true` após `pkill` para não travar se o processo não existir
 - Se o curl retornar 000, espere mais alguns segundos e tente novamente
 """
@@ -252,7 +252,7 @@ Depois, envie a URL pública de forma clara e clicável.
 
         ngrok_cmd = shutil.which("ngrok") or os.path.expanduser("~/bin/ngrok")
         tunnel_proc = await asyncio.create_subprocess_exec(
-            ngrok_cmd, "http", str(porta),
+            ngrok_cmd, "http", str(porta), "--name", nome,
             cwd=projeto_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -269,7 +269,7 @@ Depois, envie a URL pública de forma clara e clicável.
         tunnels_data = json.loads(api_out.decode())
         tunnel_url = ""
         for t in tunnels_data.get("tunnels", []):
-            if f":{porta}" in t.get("config", {}).get("addr", ""):
+            if t.get("name") == nome:
                 tunnel_url = t.get("public_url", "")
                 break
 
