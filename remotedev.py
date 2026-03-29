@@ -241,9 +241,12 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from lib.claude import claude_processos
     proc = claude_processos.get(cwd)
 
-    claude_cancelado.add(cwd)
+    from lib.claude import claude_locks
+    lock = claude_locks.get(cwd)
+    tem_fila = lock and lock.locked()
 
     if proc and proc.poll() is None:
+        claude_cancelado.add(cwd)
         await update.message.reply_text(f"⏳ Cancelando... [{label}]")
         try:
             os.killpg(os.getpgid(proc.pid), 9)
@@ -251,8 +254,11 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         claude_processos.pop(cwd, None)
         await update.message.reply_text(f"🛑 Tudo cancelado! [{label}]")
-    else:
+    elif tem_fila:
+        claude_cancelado.add(cwd)
         await update.message.reply_text(f"🛑 Fila limpa! [{label}]")
+    else:
+        await update.message.reply_text(f"ℹ️ Nada para cancelar. [{label}]")
 
 
 @autorizado

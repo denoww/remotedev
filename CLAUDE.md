@@ -31,3 +31,9 @@ Em produção roda como systemd user service (`remotedev-<nome>`).
 - Cada chat pode ter um projeto ativo por vez (estado em memória)
 - Bot roda em produção — testar antes de alterar handlers ou config
 - Ao adicionar/remover comandos: atualizar `BOTFATHER_COMMANDS` em `lib/config.py` (fonte única) e o `README.md`
+
+## Debugging
+
+- Ao receber um erro, sempre analisar os logs antes de diagnosticar:
+  - Serviço (journald): `journalctl --user -u remotedev-<bot> -n 50 --no-pager` (onde `<bot>` é o BOT_NOME do bot atual, ex: `dev`)
+  - Claude: `tail -50 claude-<bot>.log`

@@ -137,13 +137,15 @@ async def rodar_claude_completo(msg, chat_id, prompt):
         claude_locks[cwd] = asyncio.Lock()
     lock = claude_locks[cwd]
 
-    if lock.locked():
+    enfileirado = lock.locked()
+
+    if enfileirado:
         if cwd in claude_cancelado:
             return
         await msg.reply_text(f"⏳ Aguardando comando anterior... [{label}]")
 
     async with lock:
-        if cwd in claude_cancelado:
+        if enfileirado and cwd in claude_cancelado:
             claude_cancelado.discard(cwd)
             return
 
