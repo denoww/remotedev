@@ -16,6 +16,7 @@ pendente = {}  # chat_id → mensagem original pendente após escolha de projeto
 push_pendente = {}  # chat_id → {cwd, msg_commit} aguardando confirmação
 reset_pendente = {}  # chat_id → {cwd, label} aguardando confirmação
 novo_projeto_pendente = {}  # chat_id → True quando aguardando nome do novo projeto
+ia_apikey_pendente = {}  # chat_id → {nome, provider} aguardando API key para análise IA
 
 
 def projeto_ativo(chat_id: int):

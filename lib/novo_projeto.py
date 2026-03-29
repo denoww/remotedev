@@ -2,7 +2,6 @@ import os
 import re
 import html
 import json
-import shutil
 import asyncio
 import socket
 
@@ -10,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from lib.config import PROJETOS, WORKSPACE, descobrir_projetos
-from lib.utils import novo_projeto_pendente, estado, autorizado
+from lib.utils import novo_projeto_pendente, ia_apikey_pendente, estado, autorizado
 
 # PATH expandido para subprocessos (systemd não carrega .bashrc)
 _ENV = {**os.environ, "PATH": os.path.expanduser("~/bin") + ":" + os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
@@ -185,7 +184,7 @@ pnpm deploy:preview   # deploy para ambiente preview
 
 ## Ligar servidor e URL pública
 
-Quando o usuário pedir para ligar o servidor, URL pública, ou testar o app:
+**SEMPRE que ligar o dev server, inicie o ngrok junto e envie a URL pública.** O usuário acessa remotamente e precisa da URL pública sempre. O ngrok está instalado e com plano pago — assuma que funciona.
 
 **Execute os comandos abaixo EM UMA ÚNICA chamada bash, todos juntos:**
 
@@ -269,9 +268,8 @@ Depois, envie a URL pública de forma clara e clicável.
         )
         await asyncio.sleep(4)  # esperar o dev server subir
 
-        ngrok_cmd = shutil.which("ngrok") or os.path.expanduser("~/bin/ngrok")
         tunnel_proc = await asyncio.create_subprocess_exec(
-            ngrok_cmd, "http", str(porta), "--name", nome,
+            "ngrok", "http", str(porta), "--name", nome,
             cwd=projeto_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -321,6 +319,9 @@ Depois, envie a URL pública de forma clara e clicável.
         reply_markup=teclado,
     )
 
+    # Perguntar se quer análise com IA
+    await _perguntar_ia(msg, nome)
+
 
 @autorizado
 async def callback_github_novo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -364,3 +365,156 @@ async def callback_github_novo(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🔗 {repo_url}",
             parse_mode="HTML",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ANÁLISE COM IA — Configuração de API key + CLAUDE.md
+# ══════════════════════════════════════════════════════════════════════
+
+_IA_PROVIDERS = {
+    "gemini": {"nome": "Gemini", "env_var": "GEMINI_API_KEY", "pacote": "npm:@google/genai"},
+    "openai": {"nome": "OpenAI", "env_var": "OPENAI_API_KEY", "pacote": "npm:openai"},
+    "anthropic": {"nome": "Anthropic", "env_var": "ANTHROPIC_API_KEY", "pacote": "npm:@anthropic-ai/sdk"},
+}
+
+
+async def _perguntar_ia(msg, nome: str):
+    """Pergunta se o usuário quer adicionar análise com IA ao projeto."""
+    teclado = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Sim", callback_data=f"ia_analise:sim:{nome}"),
+            InlineKeyboardButton("❌ Não", callback_data=f"ia_analise:nao:{nome}"),
+        ]
+    ])
+    await msg.reply_text(
+        "🤖 Pretende usar <b>análise de dados com IA</b> neste projeto?",
+        parse_mode="HTML",
+        reply_markup=teclado,
+    )
+
+
+@autorizado
+async def callback_ia_analise(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback para decisão de usar ou não análise com IA."""
+    query = update.callback_query
+    await query.answer()
+    _, resposta, nome = query.data.split(":", 2)
+
+    if resposta == "nao":
+        await query.edit_message_text("👍 Projeto criado sem análise com IA.")
+        return
+
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔷 Gemini", callback_data=f"ia_provider:gemini:{nome}")],
+        [InlineKeyboardButton("🟢 OpenAI", callback_data=f"ia_provider:openai:{nome}")],
+        [InlineKeyboardButton("🟠 Anthropic (Claude API)", callback_data=f"ia_provider:anthropic:{nome}")],
+    ])
+    await query.edit_message_text(
+        "Qual provider de IA você quer usar?",
+        reply_markup=teclado,
+    )
+
+
+@autorizado
+async def callback_ia_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback para escolha do provider de IA."""
+    query = update.callback_query
+    await query.answer()
+    _, provider, nome = query.data.split(":", 2)
+
+    info = _IA_PROVIDERS[provider]
+    chat_id = update.effective_chat.id
+    ia_apikey_pendente[chat_id] = {"nome": nome, "provider": provider}
+
+    await query.edit_message_text(
+        f"🔑 Envie a <b>API key</b> do {info['nome']}:\n\n"
+        f"<i>(variável: <code>{info['env_var']}</code>)</i>\n\n"
+        "Ou /cancelar para pular.",
+        parse_mode="HTML",
+    )
+
+
+async def processar_apikey_ia(chat_id: int, apikey: str, msg):
+    """Recebe a API key, salva no .env e atualiza o CLAUDE.md do projeto."""
+    dados = ia_apikey_pendente.pop(chat_id)
+    nome = dados["nome"]
+    provider = dados["provider"]
+    info = _IA_PROVIDERS[provider]
+    projeto_dir = os.path.join(WORKSPACE, nome)
+
+    # 1) Salvar no .env do projeto
+    env_path = os.path.join(projeto_dir, ".env")
+    linhas_existentes = []
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            linhas_existentes = f.readlines()
+
+    # Remover linha antiga da mesma var, se existir
+    linhas_existentes = [l for l in linhas_existentes if not l.startswith(f"{info['env_var']}=")]
+    linhas_existentes.append(f"{info['env_var']}={apikey}\n")
+
+    with open(env_path, "w") as f:
+        f.writelines(linhas_existentes)
+
+    # Garantir que .env está no .gitignore
+    gitignore_path = os.path.join(projeto_dir, ".gitignore")
+    if os.path.exists(gitignore_path):
+        with open(gitignore_path) as f:
+            conteudo = f.read()
+        if ".env" not in conteudo.split("\n"):
+            with open(gitignore_path, "a") as f:
+                f.write("\n.env\n")
+
+    # 2) Instalar SDK do provider
+    await msg.reply_text(f"📦 Instalando SDK do {info['nome']}...")
+    proc = await asyncio.create_subprocess_exec(
+        "pnpm", "add", info["pacote"],
+        cwd=projeto_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_ENV,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        erro = stderr.decode().strip() or stdout.decode().strip()
+        await msg.reply_text(
+            f"⚠️ Erro ao instalar SDK:\n<pre>{html.escape(erro[:1500])}</pre>",
+            parse_mode="HTML",
+        )
+
+    # 3) Atualizar CLAUDE.md com seção de análise de dados
+    claude_md_path = os.path.join(projeto_dir, "CLAUDE.md")
+    secao_ia = f"""
+
+## Análise de Dados com IA
+
+Este projeto usa a API do **{info['nome']}** para análise de dados.
+
+- **Provider:** {info['nome']}
+- **SDK:** `{info['pacote']}`
+- **Variável de ambiente:** `{info['env_var']}` (configurada no `.env`)
+
+### Como usar
+
+Quando o usuário pedir para analisar dados, usar a API do {info['nome']} para processar.
+A API key está disponível via `process.env.{info['env_var']}`.
+
+### Exemplos de análise que podem ser solicitadas
+
+- Análise de tendências e padrões nos dados
+- Resumos e insights a partir de datasets
+- Classificação e categorização de informações
+- Geração de relatórios baseados em dados
+"""
+    if os.path.exists(claude_md_path):
+        with open(claude_md_path, "a") as f:
+            f.write(secao_ia)
+
+    await msg.reply_text(
+        f"✅ IA configurada!\n\n"
+        f"🤖 <b>Provider:</b> {info['nome']}\n"
+        f"🔑 <b>Env:</b> <code>{info['env_var']}</code>\n"
+        f"📦 <b>SDK:</b> <code>{info['pacote']}</code>\n\n"
+        f"A API key foi salva no <code>.env</code> e a estrutura de análise foi adicionada ao <code>CLAUDE.md</code>.",
+        parse_mode="HTML",
+    )

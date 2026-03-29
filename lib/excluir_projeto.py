@@ -1,4 +1,5 @@
 import os
+import stat
 import shutil
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -91,9 +92,13 @@ async def callback_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-    # Excluir diretório
+    # Excluir diretório (force: corrige permissões de pastas como .turbo, node_modules)
+    def _force_remove(func, path, exc_info):
+        os.chmod(path, stat.S_IRWXU)
+        func(path)
+
     try:
-        shutil.rmtree(projeto_dir)
+        shutil.rmtree(projeto_dir, onexc=_force_remove)
     except Exception as e:
         await query.edit_message_text(
             f"❌ Erro ao excluir <b>{nome}</b>:\n<pre>{e}</pre>",

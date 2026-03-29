@@ -31,7 +31,7 @@ from lib.config import (
     PROJETOS, BOTFATHER_COMMANDS,
 )
 from lib.utils import (
-    estado, pendente, push_pendente, novo_projeto_pendente,
+    estado, pendente, push_pendente, novo_projeto_pendente, ia_apikey_pendente,
     projeto_ativo, projeto_config, projeto_path, projeto_label,
     exigir_projeto, autorizado, rodar, rodar_async, enviar_resultado,
 )
@@ -45,7 +45,10 @@ from lib.git_ops import (
     _enviar_diff, _gerar_commit_ia, git_push,
 )
 from lib.hooks import pos_push
-from lib.novo_projeto import callback_novo_projeto, callback_github_novo, criar_projeto, validar_nome_projeto
+from lib.novo_projeto import (
+    callback_novo_projeto, callback_github_novo, criar_projeto, validar_nome_projeto,
+    callback_ia_analise, callback_ia_provider, processar_apikey_ia,
+)
 from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exclusao, callback_excluir
 
 
@@ -255,6 +258,10 @@ async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @autorizado
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    if chat_id in ia_apikey_pendente:
+        del ia_apikey_pendente[chat_id]
+        await update.message.reply_text("Configuração de IA cancelada.")
+        return
     if chat_id in novo_projeto_pendente:
         del novo_projeto_pendente[chat_id]
         await update.message.reply_text("Criação de projeto cancelada.")
@@ -328,6 +335,15 @@ async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+
+    # Fluxo: aguardando API key para análise com IA
+    if chat_id in ia_apikey_pendente:
+        apikey = texto.strip()
+        if not apikey:
+            await update.message.reply_text("API key inválida. Tente novamente ou /cancelar.")
+            return
+        await processar_apikey_ia(chat_id, apikey, update.message)
+        return
 
     # Fluxo: aguardando nome do novo projeto
     if chat_id in novo_projeto_pendente:
@@ -556,6 +572,8 @@ def main():
     app.add_handler(CommandHandler("projeto", cmd_projeto))
     app.add_handler(CallbackQueryHandler(callback_novo_projeto, pattern=r"^novo_projeto$"))
     app.add_handler(CallbackQueryHandler(callback_github_novo, pattern=r"^github_novo:"))
+    app.add_handler(CallbackQueryHandler(callback_ia_analise, pattern=r"^ia_analise:"))
+    app.add_handler(CallbackQueryHandler(callback_ia_provider, pattern=r"^ia_provider:"))
     app.add_handler(CallbackQueryHandler(callback_voltar_projeto, pattern=r"^voltar_projeto$"))
     app.add_handler(CallbackQueryHandler(callback_excluir_projeto, pattern=r"^excluir_projeto$"))
     app.add_handler(CallbackQueryHandler(callback_confirmar_exclusao, pattern=r"^confirmar_exclusao:"))
