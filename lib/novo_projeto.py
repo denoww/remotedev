@@ -147,6 +147,16 @@ pnpm biome check  # linter + formatter (Biome)
 - Componentes em `components/`
 - Componentes de UI (shadcn) em `components/ui/`
 - Páginas no App Router em `app/`
+
+## URL Pública
+
+Quando o usuário pedir uma URL pública (para testar no celular, compartilhar, etc), gere uma nova URL com localtunnel e envie de forma fácil de clicar/copiar:
+
+```bash
+npx localtunnel --port <porta_do_dev_server>
+```
+
+A porta padrão do dev server é a configurada no `package.json` ou a usada no `pnpm dev`. Envie a URL resultante de forma clara e clicável.
 """
     with open(os.path.join(projeto_dir, "CLAUDE.md"), "w") as f:
         f.write(claude_md)
