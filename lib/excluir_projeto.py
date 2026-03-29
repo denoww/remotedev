@@ -1,6 +1,7 @@
 import os
 import stat
 import shutil
+import asyncio
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -81,16 +82,30 @@ async def callback_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     projeto_dir = PROJETOS[nome]["path"]
 
-    # Matar processos de dev server + tunnel se houver
-    procs = _tunnel_procs.pop(nome, None)
-    if procs:
-        for key in ("dev", "tunnel"):
-            proc = procs.get(key)
-            if proc and proc.returncode is None:
+    # Matar processos de dev server + proxy deste projeto
+    info = _tunnel_procs.pop(nome, None)
+    if info:
+        porta = info.get("porta")
+        if porta:
+            for pattern in [f"vinext dev.*--port {porta}", f"{nome}-dev.log", f"proxy{porta}"]:
                 try:
-                    proc.kill()
+                    proc = await asyncio.create_subprocess_exec(
+                        "pkill", "-f", pattern,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.communicate()
                 except Exception:
                     pass
+        # Remover tunnel ngrok via API
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-s", "-X", "DELETE", f"http://localhost:4040/api/tunnels/{nome}",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.communicate()
+        except Exception:
+            pass
 
     # Excluir diretório (force: corrige permissões de pastas como .turbo, node_modules)
     def _force_remove(func, path, exc_info):

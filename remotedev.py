@@ -634,20 +634,31 @@ def main():
                 commands.append(BotCommand(cmd.strip(), desc.strip()))
         await application.bot.set_my_commands(commands)
 
-        projetos_atuais = descobrir_projetos(WORKSPACE)
-        teclado = [
-            [InlineKeyboardButton(cfg['nome'], callback_data=f"projeto:{key}")]
-            for key, cfg in projetos_atuais.items()
-        ]
-        teclado.append([
-            InlineKeyboardButton("➕ Novo Projeto", callback_data="novo_projeto"),
-            InlineKeyboardButton("🗑 Excluir Projeto", callback_data="excluir_projeto"),
-        ])
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"🟢 {BOT_NOME} iniciado!\nEscolha o projeto:",
-            reply_markup=InlineKeyboardMarkup(teclado),
-        )
+        # Se já tem projeto ativo restaurado do disco, apenas informa
+        proj_restaurado = projeto_ativo(CHAT_ID)
+        if proj_restaurado and proj_restaurado in descobrir_projetos(WORKSPACE):
+            label = projeto_label(CHAT_ID)
+            await atualizar_nome_bot(application.bot, CHAT_ID)
+            await application.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"🟢 {BOT_NOME} iniciado!\n📂 Projeto restaurado: *{label}*",
+                parse_mode="Markdown",
+            )
+        else:
+            projetos_atuais = descobrir_projetos(WORKSPACE)
+            teclado = [
+                [InlineKeyboardButton(cfg['nome'], callback_data=f"projeto:{key}")]
+                for key, cfg in projetos_atuais.items()
+            ]
+            teclado.append([
+                InlineKeyboardButton("➕ Novo Projeto", callback_data="novo_projeto"),
+                InlineKeyboardButton("🗑 Excluir Projeto", callback_data="excluir_projeto"),
+            ])
+            await application.bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"🟢 {BOT_NOME} iniciado!\nEscolha o projeto:",
+                reply_markup=InlineKeyboardMarkup(teclado),
+            )
 
     app.post_init = post_init
     print("✅ Bot rodando! Ctrl+C pra parar.\n")

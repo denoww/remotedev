@@ -185,83 +185,24 @@ pnpm deploy:preview   # deploy para ambiente preview
 
 ## Ligar servidor e URL pública
 
-**SEMPRE que ligar o dev server, inicie o ngrok junto e envie a URL pública.** O usuário acessa remotamente e precisa da URL pública sempre.
-
-### Arquitetura de rede
-
-O ngrok roda dentro de um **container Docker** (serviço do sistema). Ele NÃO consegue acessar `localhost` do host.
-Por isso, é necessário um **proxy Node.js** escutando em `0.0.0.0:{porta_proxy}` que redireciona para `127.0.0.1:{porta}`.
-O tunnel ngrok é criado via **API REST** (porta 4040) do agente já em execução, apontando para `172.18.0.1:{porta_proxy}` (IP do host visto pelo container).
-
-O ngrok tem plano Hobby com **3 endpoints simultâneos**. Cada projeto usa `subdomain` diferente para não conflitar:
-- `seucondominio` → domínio reservado padrão
-- `{nome}` → subdomain `{nome}-painel`
-
-**Execute os comandos abaixo EM UMA ÚNICA chamada bash, todos juntos:**
+**SEMPRE que ligar o dev server, use o script `dev-server.sh` e envie a URL pública.** O usuário acessa remotamente e precisa da URL pública sempre.
 
 ```bash
-# Matar processos anteriores SOMENTE deste projeto
-pkill -f 'vinext dev.*--port {porta}' 2>/dev/null || true
-pkill -f '{nome}-dev.log' 2>/dev/null || true
-pkill -f proxy{porta} 2>/dev/null || true
-sleep 2
-
-# Iniciar dev server em background com auto-restart (reinicia sozinho se cair)
-nohup bash -c 'while true; do pnpm dev >> /tmp/{nome}-dev.log 2>&1; echo "[$(date)] Server caiu, reiniciando em 2s..." >> /tmp/{nome}-dev.log; sleep 2; done' > /dev/null 2>&1 &
-sleep 5
-
-# Verificar se o servidor subiu
-curl -s -o /dev/null -w "%{{http_code}}" http://127.0.0.1:{porta}
-
-# Iniciar proxy Node.js (0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}) para o ngrok dockerizado alcançar
-cat > /tmp/proxy{porta}.js << 'PROXYEOF'
-const http = require("http");
-const net = require("net");
-const proxy = http.createServer((req, res) => {{
-  const opts = {{ hostname: "127.0.0.1", port: {porta}, path: req.url, method: req.method, headers: {{ ...req.headers, host: "localhost:{porta}" }} }};
-  const p = http.request(opts, (pr) => {{ res.writeHead(pr.statusCode, pr.headers); pr.pipe(res); }});
-  p.on("error", (e) => {{ res.writeHead(502); res.end("proxy error: " + e.message); }});
-  req.pipe(p);
-}});
-proxy.on("upgrade", (req, socket, head) => {{
-  const conn = net.connect({porta}, "127.0.0.1", () => {{
-    const headers = {{ ...req.headers, host: "localhost:{porta}" }};
-    let reqLine = req.method + " " + req.url + " HTTP/1.1\\r\\n";
-    for (const [k, v] of Object.entries(headers)) reqLine += k + ": " + v + "\\r\\n";
-    reqLine += "\\r\\n";
-    conn.write(reqLine); conn.write(head); socket.pipe(conn).pipe(socket);
-  }});
-  conn.on("error", () => socket.destroy());
-}});
-proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}"));
-PROXYEOF
-nohup node /tmp/proxy{porta}.js > /tmp/proxy{porta}.log 2>&1 &
-sleep 2
-
-# Remover tunnel {nome} anterior (se existir) e recriar via API do ngrok
-curl -s -X DELETE http://localhost:4040/api/tunnels/{nome} 2>/dev/null || true
-sleep 1
-
-# Criar tunnel com subdomain próprio (não conflita com outros projetos)
-curl -s -X POST http://localhost:4040/api/tunnels \\
-  -H "Content-Type: application/json" \\
-  -d '{{"addr": "http://172.18.0.1:{porta_proxy}", "proto": "http", "name": "{nome}", "subdomain": "{nome}-painel"}}' | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print(d.get('public_url', d))
-"
+./dev-server.sh
 ```
+
+O script faz tudo automaticamente:
+1. Mata processos anteriores deste projeto (sem afetar outros)
+2. Inicia o dev server com **auto-restart** (se cair, reinicia sozinho em 2s)
+3. Inicia proxy Node.js (0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}) para o ngrok dockerizado alcançar
+4. Cria tunnel ngrok via API REST com subdomain `{nome}-painel`
 
 Depois, envie a URL pública de forma clara e clicável.
 
 **Regras importantes:**
-- Sempre rode TODOS os comandos numa única chamada bash — se separar, os processos background morrem
-- Sempre use `nohup ... &` para processos de longa duração
-- NUNCA mate processos genéricos (ex: `pkill -f ngrok`) — sempre filtre pelo name `{nome}` para não afetar outros projetos
-- Sempre use `|| true` após `pkill` para não travar se o processo não existir
+- NUNCA mate processos genéricos (ex: `pkill -f ngrok`) — o script filtra pelo nome `{nome}`
 - O tunnel é criado via API REST na porta 4040 (agente ngrok do sistema), NÃO via CLI `ngrok http`
-- Usar `subdomain: "{nome}-painel"` para ter URL separada de outros projetos
-- O proxy é necessário porque o ngrok roda em container Docker e não alcança localhost do host
+- Log do dev server: `/tmp/{nome}-dev.log`
 """
     with open(os.path.join(projeto_dir, "CLAUDE.md"), "w") as f:
         f.write(claude_md)
@@ -281,6 +222,91 @@ Depois, envie a URL pública de forma clara e clicável.
     with open(os.path.join(projeto_dir, "biome.json"), "w") as f:
         f.write(biome_config)
 
+    # 7) Gerar dev-server.sh (auto-restart + proxy + tunnel ngrok)
+    dev_server_sh = f"""#!/usr/bin/env bash
+# dev-server.sh — Inicia dev server com auto-restart, proxy e tunnel ngrok
+# Uso: ./dev-server.sh
+set -euo pipefail
+
+NOME="{nome}"
+PORTA={porta}
+PORTA_PROXY={porta_proxy}
+LOG="/tmp/$NOME-dev.log"
+PROXY_SCRIPT="/tmp/proxy$PORTA.js"
+PROXY_LOG="/tmp/proxy$PORTA.log"
+HOST_IP="172.18.0.1"  # IP do host visto pelo container Docker
+
+# ── Cleanup de processos anteriores deste projeto ──────────────────
+pkill -f "vinext dev.*--port $PORTA" 2>/dev/null || true
+pkill -f "$NOME-dev.log" 2>/dev/null || true
+pkill -f "proxy$PORTA" 2>/dev/null || true
+sleep 2
+
+# ── Dev server com auto-restart ────────────────────────────────────
+nohup bash -c "while true; do pnpm dev >> $LOG 2>&1; echo \\"[\\$(date)] Server caiu, reiniciando em 2s...\\" >> $LOG; sleep 2; done" > /dev/null 2>&1 &
+DEV_PID=$!
+echo "Dev server PID: $DEV_PID (porta $PORTA, log: $LOG)"
+sleep 5
+
+# Verificar se subiu
+HTTP_CODE=$(curl -s -o /dev/null -w "%{{http_code}}" "http://127.0.0.1:$PORTA" 2>/dev/null || echo "000")
+if [ "$HTTP_CODE" = "000" ]; then
+    echo "⚠️  Dev server pode não ter subido ainda (HTTP $HTTP_CODE). Verifique $LOG"
+else
+    echo "✅ Dev server respondendo (HTTP $HTTP_CODE)"
+fi
+
+# ── Proxy Node.js (para ngrok dockerizado alcançar o dev server) ───
+cat > "$PROXY_SCRIPT" << 'PROXYEOF'
+const http = require("http");
+const net = require("net");
+const PORT = parseInt(process.env.PORTA);
+const PROXY_PORT = parseInt(process.env.PORTA_PROXY);
+const proxy = http.createServer((req, res) => {{
+  const opts = {{ hostname: "127.0.0.1", port: PORT, path: req.url, method: req.method, headers: {{ ...req.headers, host: "localhost:" + PORT }} }};
+  const p = http.request(opts, (pr) => {{ res.writeHead(pr.statusCode, pr.headers); pr.pipe(res); }});
+  p.on("error", (e) => {{ res.writeHead(502); res.end("proxy error: " + e.message); }});
+  req.pipe(p);
+}});
+proxy.on("upgrade", (req, socket, head) => {{
+  const conn = net.connect(PORT, "127.0.0.1", () => {{
+    const headers = {{ ...req.headers, host: "localhost:" + PORT }};
+    let reqLine = req.method + " " + req.url + " HTTP/1.1\\r\\n";
+    for (const [k, v] of Object.entries(headers)) reqLine += k + ": " + v + "\\r\\n";
+    reqLine += "\\r\\n";
+    conn.write(reqLine); conn.write(head); socket.pipe(conn).pipe(socket);
+  }});
+  conn.on("error", () => socket.destroy());
+}});
+proxy.listen(PROXY_PORT, "0.0.0.0", () => console.log("proxy on 0.0.0.0:" + PROXY_PORT + " -> 127.0.0.1:" + PORT));
+PROXYEOF
+PORTA=$PORTA PORTA_PROXY=$PORTA_PROXY nohup node "$PROXY_SCRIPT" > "$PROXY_LOG" 2>&1 &
+echo "Proxy PID: $! (0.0.0.0:$PORTA_PROXY -> 127.0.0.1:$PORTA)"
+sleep 2
+
+# ── Tunnel ngrok via API REST (agente dockerizado na porta 4040) ───
+curl -s -X DELETE "http://localhost:4040/api/tunnels/$NOME" 2>/dev/null || true
+sleep 1
+
+TUNNEL_URL=$(curl -s -X POST http://localhost:4040/api/tunnels \\
+  -H "Content-Type: application/json" \\
+  -d "{{\\"addr\\": \\"http://$HOST_IP:$PORTA_PROXY\\", \\"proto\\": \\"http\\", \\"name\\": \\"$NOME\\", \\"subdomain\\": \\"${{NOME}}-painel\\"}}" 2>/dev/null \\
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('public_url',''))" 2>/dev/null || echo "")
+
+if [ -n "$TUNNEL_URL" ]; then
+    echo "🌐 URL pública: $TUNNEL_URL"
+else
+    echo "⚠️  Tunnel criado mas não consegui obter URL. Tente: curl -s http://localhost:4040/api/tunnels"
+fi
+
+echo ""
+echo "🏠 URL local: http://localhost:$PORTA"
+"""
+    script_path = os.path.join(projeto_dir, "dev-server.sh")
+    with open(script_path, "w") as f:
+        f.write(dev_server_sh)
+    os.chmod(script_path, 0o755)
+
     # Git init + primeiro commit
     await msg.reply_text("🔧 Configurando Git...")
     git_cmds = [
@@ -296,90 +322,25 @@ Depois, envie a URL pública de forma clara e clicável.
         )
         await proc.communicate()
 
-    # Iniciar dev server + proxy + tunnel público via API ngrok
+    # Iniciar dev server + proxy + tunnel via dev-server.sh
     await msg.reply_text(f"🌐 Iniciando servidor dev (porta {porta}) + proxy ({porta_proxy}) + tunnel público...")
     try:
-        dev_proc = await asyncio.create_subprocess_exec(
-            "bash", "-c",
-            f"while true; do pnpm dev >> /tmp/{nome}-dev.log 2>&1; echo \"[$(date)] Server caiu, reiniciando em 2s...\" >> /tmp/{nome}-dev.log; sleep 2; done",
+        proc = await asyncio.create_subprocess_exec(
+            "bash", os.path.join(projeto_dir, "dev-server.sh"),
             cwd=projeto_dir,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=_ENV,
         )
-        await asyncio.sleep(5)  # esperar o dev server subir
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        saida = stdout.decode().strip()
 
-        # Proxy Node.js (0.0.0.0:porta_proxy -> 127.0.0.1:porta) para o ngrok dockerizado alcançar
-        proxy_script = f"""
-const http = require("http");
-const net = require("net");
-const proxy = http.createServer((req, res) => {{
-  const opts = {{ hostname: "127.0.0.1", port: {porta}, path: req.url, method: req.method, headers: {{ ...req.headers, host: "localhost:{porta}" }} }};
-  const p = http.request(opts, (pr) => {{ res.writeHead(pr.statusCode, pr.headers); pr.pipe(res); }});
-  p.on("error", (e) => {{ res.writeHead(502); res.end("proxy error: " + e.message); }});
-  req.pipe(p);
-}});
-proxy.on("upgrade", (req, socket, head) => {{
-  const conn = net.connect({porta}, "127.0.0.1", () => {{
-    const headers = {{ ...req.headers, host: "localhost:{porta}" }};
-    let reqLine = req.method + " " + req.url + " HTTP/1.1\\r\\n";
-    for (const [k, v] of Object.entries(headers)) reqLine += k + ": " + v + "\\r\\n";
-    reqLine += "\\r\\n";
-    conn.write(reqLine); conn.write(head); socket.pipe(conn).pipe(socket);
-  }});
-  conn.on("error", () => socket.destroy());
-}});
-proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}"));
-"""
-        proxy_path = f"/tmp/proxy{porta}.js"
-        with open(proxy_path, "w") as f:
-            f.write(proxy_script)
-
-        proxy_proc = await asyncio.create_subprocess_exec(
-            "node", proxy_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=_ENV,
-        )
-        await asyncio.sleep(2)
-
-        # Remover tunnel anterior (se existir) via API do ngrok
-        try:
-            del_proc = await asyncio.create_subprocess_exec(
-                "curl", "-s", "-X", "DELETE", f"http://localhost:4040/api/tunnels/{nome}",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(del_proc.communicate(), timeout=5)
-        except Exception:
-            pass
-        await asyncio.sleep(1)
-
-        # Criar tunnel via API REST do ngrok (agente dockerizado na porta 4040)
-        tunnel_payload = json.dumps({
-            "addr": f"http://172.18.0.1:{porta_proxy}",
-            "proto": "http",
-            "name": nome,
-            "subdomain": f"{nome}-painel",
-        })
+        # Extrair URL pública da saída do script
         tunnel_url = ""
-        for tentativa in range(3):
-            try:
-                api_proc = await asyncio.create_subprocess_exec(
-                    "curl", "-s", "-X", "POST", "http://localhost:4040/api/tunnels",
-                    "-H", "Content-Type: application/json",
-                    "-d", tunnel_payload,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                )
-                api_out, _ = await asyncio.wait_for(api_proc.communicate(), timeout=10)
-                data = json.loads(api_out.decode())
-                tunnel_url = data.get("public_url", "")
-                if tunnel_url:
-                    break
-            except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
-                await asyncio.sleep(2)
-                continue
-
-        _tunnel_procs[nome] = {"dev": dev_proc, "proxy": proxy_proc, "porta": porta, "porta_proxy": porta_proxy}
+        for linha in saida.splitlines():
+            if "URL pública:" in linha:
+                tunnel_url = linha.split("URL pública:")[-1].strip()
+                break
 
         if tunnel_url:
             await msg.reply_text(
@@ -397,6 +358,8 @@ proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{port
             )
     except (asyncio.TimeoutError, Exception) as e:
         await msg.reply_text(f"⚠️ Projeto criado, mas erro ao iniciar tunnel:\n<pre>{html.escape(str(e)[:500])}</pre>", parse_mode="HTML")
+
+    _tunnel_procs[nome] = {"porta": porta, "porta_proxy": porta_proxy}
 
     # Atualizar lista de projetos e trocar para o novo
     PROJETOS.clear()
@@ -419,8 +382,6 @@ proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{port
         reply_markup=teclado,
     )
 
-    # Perguntar se quer análise com IA
-    await _perguntar_ia(msg, nome)
 
 
 @autorizado
@@ -437,6 +398,7 @@ async def callback_github_novo(update: Update, context: ContextTypes.DEFAULT_TYP
             f"Stack: vinext + TS + Tailwind + shadcn/ui + Zod + Biome",
             parse_mode="HTML",
         )
+        await _perguntar_ia(query.message, nome)
         return
 
     projeto_dir = os.path.join(WORKSPACE, nome)
@@ -465,6 +427,9 @@ async def callback_github_novo(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🔗 {repo_url}",
             parse_mode="HTML",
         )
+
+    # Perguntar se quer análise com IA (após resolver o GitHub)
+    await _perguntar_ia(query.message, nome)
 
 
 # ══════════════════════════════════════════════════════════════════════
