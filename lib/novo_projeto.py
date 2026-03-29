@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from lib.config import PROJETOS, WORKSPACE, descobrir_projetos
-from lib.utils import novo_projeto_pendente, ia_apikey_pendente, estado, autorizado
+from lib.utils import novo_projeto_pendente, ia_apikey_pendente, ia_modelo_pendente, estado, autorizado
 
 # PATH expandido para subprocessos (systemd não carrega .bashrc)
 _ENV = {**os.environ, "PATH": os.path.expanduser("~/bin") + ":" + os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
@@ -93,6 +93,7 @@ async def criar_projeto(nome: str, chat_id: int, msg):
 
     # Alocar porta para o dev server (nunca usar 3000)
     porta = _proxima_porta_livre()
+    porta_proxy = porta + 50  # proxy para ngrok dockerizado (ex: 5000 → 5050)
 
     # 2) Converter para vinext (Vite + Cloudflare Workers)
     await msg.reply_text("☁️ Convertendo para vinext...")
@@ -184,33 +185,69 @@ pnpm deploy:preview   # deploy para ambiente preview
 
 ## Ligar servidor e URL pública
 
-**SEMPRE que ligar o dev server, inicie o ngrok junto e envie a URL pública.** O usuário acessa remotamente e precisa da URL pública sempre. O ngrok está instalado e com plano pago — assuma que funciona.
+**SEMPRE que ligar o dev server, inicie o ngrok junto e envie a URL pública.** O usuário acessa remotamente e precisa da URL pública sempre.
+
+### Arquitetura de rede
+
+O ngrok roda dentro de um **container Docker** (serviço do sistema). Ele NÃO consegue acessar `localhost` do host.
+Por isso, é necessário um **proxy Node.js** escutando em `0.0.0.0:{porta_proxy}` que redireciona para `127.0.0.1:{porta}`.
+O tunnel ngrok é criado via **API REST** (porta 4040) do agente já em execução, apontando para `172.18.0.1:{porta_proxy}` (IP do host visto pelo container).
+
+O ngrok tem plano Hobby com **3 endpoints simultâneos**. Cada projeto usa `subdomain` diferente para não conflitar:
+- `seucondominio` → domínio reservado padrão
+- `{nome}` → subdomain `{nome}-painel`
 
 **Execute os comandos abaixo EM UMA ÚNICA chamada bash, todos juntos:**
 
 ```bash
-# Matar processos anteriores SOMENTE deste projeto (pela porta {porta})
+# Matar processos anteriores SOMENTE deste projeto
 pkill -f 'vinext dev.*--port {porta}' 2>/dev/null || true
-pkill -f 'ngrok http.*--name {nome}' 2>/dev/null || true
-sleep 1
+pkill -f proxy{porta} 2>/dev/null || true
+sleep 2
 
 # Iniciar dev server em background
 nohup pnpm dev > /tmp/{nome}-dev.log 2>&1 &
-sleep 4
+sleep 5
 
 # Verificar se o servidor subiu
-curl -s -o /dev/null -w "%{{http_code}}" http://localhost:{porta}
+curl -s -o /dev/null -w "%{{http_code}}" http://127.0.0.1:{porta}
 
-# Iniciar ngrok com --name para identificar o projeto
-nohup ngrok http {porta} --name {nome} --log /tmp/{nome}-ngrok.log > /dev/null 2>&1 &
-sleep 3
+# Iniciar proxy Node.js (0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}) para o ngrok dockerizado alcançar
+cat > /tmp/proxy{porta}.js << 'PROXYEOF'
+const http = require("http");
+const net = require("net");
+const proxy = http.createServer((req, res) => {{
+  const opts = {{ hostname: "127.0.0.1", port: {porta}, path: req.url, method: req.method, headers: {{ ...req.headers, host: "localhost:{porta}" }} }};
+  const p = http.request(opts, (pr) => {{ res.writeHead(pr.statusCode, pr.headers); pr.pipe(res); }});
+  p.on("error", (e) => {{ res.writeHead(502); res.end("proxy error: " + e.message); }});
+  req.pipe(p);
+}});
+proxy.on("upgrade", (req, socket, head) => {{
+  const conn = net.connect({porta}, "127.0.0.1", () => {{
+    const headers = {{ ...req.headers, host: "localhost:{porta}" }};
+    let reqLine = req.method + " " + req.url + " HTTP/1.1\\r\\n";
+    for (const [k, v] of Object.entries(headers)) reqLine += k + ": " + v + "\\r\\n";
+    reqLine += "\\r\\n";
+    conn.write(reqLine); conn.write(head); socket.pipe(conn).pipe(socket);
+  }});
+  conn.on("error", () => socket.destroy());
+}});
+proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}"));
+PROXYEOF
+nohup node /tmp/proxy{porta}.js > /tmp/proxy{porta}.log 2>&1 &
+sleep 2
 
-# Pegar URL pública via API do ngrok (filtrando pelo name do projeto)
-curl -s http://localhost:4040/api/tunnels | python3 -c "
+# Remover tunnel {nome} anterior (se existir) e recriar via API do ngrok
+curl -s -X DELETE http://localhost:4040/api/tunnels/{nome} 2>/dev/null || true
+sleep 1
+
+# Criar tunnel com subdomain próprio (não conflita com outros projetos)
+curl -s -X POST http://localhost:4040/api/tunnels \\
+  -H "Content-Type: application/json" \\
+  -d '{{"addr": "http://172.18.0.1:{porta_proxy}", "proto": "http", "name": "{nome}", "subdomain": "{nome}-painel"}}' | python3 -c "
 import sys, json
-for t in json.load(sys.stdin)['tunnels']:
-    if t.get('name') == '{nome}':
-        print(t['public_url']); break
+d = json.load(sys.stdin)
+print(d.get('public_url', d))
 "
 ```
 
@@ -221,7 +258,9 @@ Depois, envie a URL pública de forma clara e clicável.
 - Sempre use `nohup ... &` para processos de longa duração
 - NUNCA mate processos genéricos (ex: `pkill -f ngrok`) — sempre filtre pelo name `{nome}` para não afetar outros projetos
 - Sempre use `|| true` após `pkill` para não travar se o processo não existir
-- Se o curl retornar 000, espere mais alguns segundos e tente novamente
+- O tunnel é criado via API REST na porta 4040 (agente ngrok do sistema), NÃO via CLI `ngrok http`
+- Usar `subdomain: "{nome}-painel"` para ter URL separada de outros projetos
+- O proxy é necessário porque o ngrok roda em container Docker e não alcança localhost do host
 """
     with open(os.path.join(projeto_dir, "CLAUDE.md"), "w") as f:
         f.write(claude_md)
@@ -256,8 +295,8 @@ Depois, envie a URL pública de forma clara e clicável.
         )
         await proc.communicate()
 
-    # Iniciar dev server + tunnel público
-    await msg.reply_text(f"🌐 Iniciando servidor dev (porta {porta}) + tunnel público...")
+    # Iniciar dev server + proxy + tunnel público via API ngrok
+    await msg.reply_text(f"🌐 Iniciando servidor dev (porta {porta}) + proxy ({porta_proxy}) + tunnel público...")
     try:
         dev_proc = await asyncio.create_subprocess_exec(
             "pnpm", "dev",
@@ -266,38 +305,79 @@ Depois, envie a URL pública de forma clara e clicável.
             stderr=asyncio.subprocess.DEVNULL,
             env=_ENV,
         )
-        await asyncio.sleep(4)  # esperar o dev server subir
+        await asyncio.sleep(5)  # esperar o dev server subir
 
-        tunnel_proc = await asyncio.create_subprocess_exec(
-            "ngrok", "http", str(porta), "--name", nome,
-            cwd=projeto_dir,
+        # Proxy Node.js (0.0.0.0:porta_proxy -> 127.0.0.1:porta) para o ngrok dockerizado alcançar
+        proxy_script = f"""
+const http = require("http");
+const net = require("net");
+const proxy = http.createServer((req, res) => {{
+  const opts = {{ hostname: "127.0.0.1", port: {porta}, path: req.url, method: req.method, headers: {{ ...req.headers, host: "localhost:{porta}" }} }};
+  const p = http.request(opts, (pr) => {{ res.writeHead(pr.statusCode, pr.headers); pr.pipe(res); }});
+  p.on("error", (e) => {{ res.writeHead(502); res.end("proxy error: " + e.message); }});
+  req.pipe(p);
+}});
+proxy.on("upgrade", (req, socket, head) => {{
+  const conn = net.connect({porta}, "127.0.0.1", () => {{
+    const headers = {{ ...req.headers, host: "localhost:{porta}" }};
+    let reqLine = req.method + " " + req.url + " HTTP/1.1\\r\\n";
+    for (const [k, v] of Object.entries(headers)) reqLine += k + ": " + v + "\\r\\n";
+    reqLine += "\\r\\n";
+    conn.write(reqLine); conn.write(head); socket.pipe(conn).pipe(socket);
+  }});
+  conn.on("error", () => socket.destroy());
+}});
+proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{porta_proxy} -> 127.0.0.1:{porta}"));
+"""
+        proxy_path = f"/tmp/proxy{porta}.js"
+        with open(proxy_path, "w") as f:
+            f.write(proxy_script)
+
+        proxy_proc = await asyncio.create_subprocess_exec(
+            "node", proxy_path,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             env=_ENV,
         )
+        await asyncio.sleep(2)
 
-        # Retry com backoff para pegar URL pública do ngrok
+        # Remover tunnel anterior (se existir) via API do ngrok
+        try:
+            del_proc = await asyncio.create_subprocess_exec(
+                "curl", "-s", "-X", "DELETE", f"http://localhost:4040/api/tunnels/{nome}",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(del_proc.communicate(), timeout=5)
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
+        # Criar tunnel via API REST do ngrok (agente dockerizado na porta 4040)
+        tunnel_payload = json.dumps({
+            "addr": f"http://172.18.0.1:{porta_proxy}",
+            "proto": "http",
+            "name": nome,
+            "subdomain": f"{nome}-painel",
+        })
         tunnel_url = ""
-        for tentativa in range(5):
-            await asyncio.sleep(2 + tentativa)  # 2s, 3s, 4s, 5s, 6s
+        for tentativa in range(3):
             try:
                 api_proc = await asyncio.create_subprocess_exec(
-                    "curl", "-s", "http://localhost:4040/api/tunnels",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                    "curl", "-s", "-X", "POST", "http://localhost:4040/api/tunnels",
+                    "-H", "Content-Type: application/json",
+                    "-d", tunnel_payload,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
-                api_out, _ = await asyncio.wait_for(api_proc.communicate(), timeout=5)
-                tunnels_data = json.loads(api_out.decode())
-                for t in tunnels_data.get("tunnels", []):
-                    if t.get("name") == nome:
-                        tunnel_url = t.get("public_url", "")
-                        break
+                api_out, _ = await asyncio.wait_for(api_proc.communicate(), timeout=10)
+                data = json.loads(api_out.decode())
+                tunnel_url = data.get("public_url", "")
                 if tunnel_url:
                     break
             except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+                await asyncio.sleep(2)
                 continue
 
-        _tunnel_procs[nome] = {"dev": dev_proc, "tunnel": tunnel_proc, "porta": porta}
+        _tunnel_procs[nome] = {"dev": dev_proc, "proxy": proxy_proc, "porta": porta, "porta_proxy": porta_proxy}
 
         if tunnel_url:
             await msg.reply_text(
@@ -308,7 +388,7 @@ Depois, envie a URL pública de forma clara e clicável.
             )
         else:
             await msg.reply_text(
-                f"⚠️ Tunnel ngrok iniciado mas não consegui obter a URL pública após 5 tentativas.\n\n"
+                f"⚠️ Tunnel ngrok criado mas não consegui obter a URL pública.\n\n"
                 f"🏠 <b>URL local:</b> http://localhost:{porta}\n"
                 f"🔧 Tente: <code>/bash curl -s http://localhost:4040/api/tunnels</code> para verificar manualmente.",
                 parse_mode="HTML",
@@ -388,9 +468,39 @@ async def callback_github_novo(update: Update, context: ContextTypes.DEFAULT_TYP
 # ══════════════════════════════════════════════════════════════════════
 
 _IA_PROVIDERS = {
-    "gemini": {"nome": "Gemini", "env_var": "GEMINI_API_KEY", "pacote": "npm:@google/genai"},
-    "openai": {"nome": "OpenAI", "env_var": "OPENAI_API_KEY", "pacote": "npm:openai"},
-    "anthropic": {"nome": "Anthropic", "env_var": "ANTHROPIC_API_KEY", "pacote": "npm:@anthropic-ai/sdk"},
+    "gemini": {
+        "nome": "Gemini",
+        "env_var": "GEMINI_API_KEY",
+        "pacote": "npm:@google/genai",
+        "como_obter": (
+            "1. Acesse: https://aistudio.google.com/apikey\n"
+            "2. Clique em <b>Create API Key</b>\n"
+            "3. Selecione ou crie um projeto Google Cloud\n"
+            "4. Copie a key gerada"
+        ),
+    },
+    "openai": {
+        "nome": "OpenAI",
+        "env_var": "OPENAI_API_KEY",
+        "pacote": "npm:openai",
+        "como_obter": (
+            "1. Acesse: https://platform.openai.com/api-keys\n"
+            "2. Clique em <b>Create new secret key</b>\n"
+            "3. Dê um nome e copie a key gerada\n"
+            "⚠️ Requer créditos adicionados em https://platform.openai.com/settings/organization/billing"
+        ),
+    },
+    "anthropic": {
+        "nome": "Anthropic",
+        "env_var": "ANTHROPIC_API_KEY",
+        "pacote": "npm:@anthropic-ai/sdk",
+        "como_obter": (
+            "1. Acesse: https://console.anthropic.com/settings/keys\n"
+            "2. Clique em <b>Create Key</b>\n"
+            "3. Dê um nome e copie a key gerada\n"
+            "⚠️ Requer créditos adicionados em https://console.anthropic.com/settings/plans"
+        ),
+    },
 }
 
 
@@ -445,16 +555,135 @@ async def callback_ia_provider(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(
         f"🔑 Envie a <b>API key</b> do {info['nome']}:\n\n"
         f"<i>(variável: <code>{info['env_var']}</code>)</i>\n\n"
+        f"<b>Como obter:</b>\n{info['como_obter']}\n\n"
         "Ou /cancelar para pular.",
         parse_mode="HTML",
     )
 
 
+async def _listar_modelos(provider: str, apikey: str) -> list[str]:
+    """Lista modelos disponíveis via API do provider. Retorna lista de IDs."""
+    modelos = []
+    try:
+        if provider == "gemini":
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={apikey}"
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-s", "-f", url,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode == 0:
+                data = json.loads(stdout.decode())
+                for m in data.get("models", []):
+                    nome_modelo = m.get("name", "").removeprefix("models/")
+                    if "generateContent" in m.get("supportedGenerationMethods", []):
+                        modelos.append(nome_modelo)
+
+        elif provider == "openai":
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-s", "-f", "https://api.openai.com/v1/models",
+                "-H", f"Authorization: Bearer {apikey}",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode == 0:
+                data = json.loads(stdout.decode())
+                for m in data.get("data", []):
+                    mid = m.get("id", "")
+                    if mid.startswith(("gpt-", "o1", "o3", "o4")):
+                        modelos.append(mid)
+
+        elif provider == "anthropic":
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-s", "-f", "https://api.anthropic.com/v1/models",
+                "-H", f"x-api-key: {apikey}", "-H", "anthropic-version: 2023-06-01",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode == 0:
+                data = json.loads(stdout.decode())
+                for m in data.get("data", []):
+                    modelos.append(m.get("id", ""))
+    except Exception:
+        pass
+
+    modelos.sort()
+    return modelos
+
+
 async def processar_apikey_ia(chat_id: int, apikey: str, msg):
-    """Recebe a API key, salva no .env e atualiza o CLAUDE.md do projeto."""
+    """Recebe a API key, valida listando modelos e oferece escolha."""
     dados = ia_apikey_pendente.pop(chat_id)
     nome = dados["nome"]
     provider = dados["provider"]
+    info = _IA_PROVIDERS[provider]
+
+    await msg.reply_text(f"🔍 Validando API key e listando modelos do {info['nome']}...")
+
+    modelos = await _listar_modelos(provider, apikey)
+
+    if not modelos:
+        # Key inválida ou API indisponível — prosseguir sem escolha de modelo
+        await msg.reply_text(
+            "⚠️ Não foi possível listar modelos (key inválida ou API indisponível).\n"
+            "Prosseguindo sem modelo específico — você pode configurar depois.",
+        )
+        await _finalizar_config_ia(chat_id, nome, provider, apikey, modelo=None, msg=msg)
+        return
+
+    # Limitar a 20 modelos para não estourar o teclado do Telegram
+    modelos_exibir = modelos[:20]
+
+    # Salvar estado pendente para escolha de modelo
+    ia_modelo_pendente[chat_id] = {
+        "nome": nome,
+        "provider": provider,
+        "apikey": apikey,
+        "modelos": modelos_exibir,
+    }
+
+    # Montar teclado com modelos (1 por linha)
+    botoes = [[InlineKeyboardButton(m, callback_data=f"ia_modelo:{i}")] for i, m in enumerate(modelos_exibir)]
+    botoes.append([InlineKeyboardButton("⏭️ Pular (sem modelo específico)", callback_data="ia_modelo:pular")])
+    teclado = InlineKeyboardMarkup(botoes)
+
+    await msg.reply_text(
+        f"✅ API key válida! {len(modelos)} modelo(s) encontrado(s).\n\n"
+        "Escolha o modelo que deseja usar:",
+        reply_markup=teclado,
+    )
+
+
+@autorizado
+async def callback_ia_modelo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback para escolha do modelo de IA."""
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+
+    if chat_id not in ia_modelo_pendente:
+        await query.edit_message_text("⚠️ Sessão expirada. Tente criar o projeto novamente.")
+        return
+
+    dados = ia_modelo_pendente.pop(chat_id)
+    escolha = query.data.split(":", 1)[1]
+
+    if escolha == "pular":
+        modelo = None
+        await query.edit_message_text("👍 Prosseguindo sem modelo específico.")
+    else:
+        idx = int(escolha)
+        modelo = dados["modelos"][idx]
+        await query.edit_message_text(f"🤖 Modelo selecionado: <b>{modelo}</b>", parse_mode="HTML")
+
+    await _finalizar_config_ia(
+        chat_id, dados["nome"], dados["provider"], dados["apikey"],
+        modelo=modelo, msg=query.message,
+    )
+
+
+async def _finalizar_config_ia(chat_id: int, nome: str, provider: str, apikey: str, modelo: str | None, msg):
+    """Salva API key + modelo no .env, instala SDK e atualiza CLAUDE.md."""
     info = _IA_PROVIDERS[provider]
     projeto_dir = os.path.join(WORKSPACE, nome)
 
@@ -465,9 +694,13 @@ async def processar_apikey_ia(chat_id: int, apikey: str, msg):
         with open(env_path) as f:
             linhas_existentes = f.readlines()
 
-    # Remover linha antiga da mesma var, se existir
-    linhas_existentes = [l for l in linhas_existentes if not l.startswith(f"{info['env_var']}=")]
+    # Remover linhas antigas das mesmas vars, se existirem
+    vars_remover = {info['env_var'], f"{info['env_var'].replace('_API_KEY', '')}_MODEL"}
+    linhas_existentes = [l for l in linhas_existentes if not any(l.startswith(f"{v}=") for v in vars_remover)]
     linhas_existentes.append(f"{info['env_var']}={apikey}\n")
+    if modelo:
+        var_modelo = info['env_var'].replace('_API_KEY', '') + '_MODEL'
+        linhas_existentes.append(f"{var_modelo}={modelo}\n")
 
     with open(env_path, "w") as f:
         f.writelines(linhas_existentes)
@@ -499,6 +732,12 @@ async def processar_apikey_ia(chat_id: int, apikey: str, msg):
         )
 
     # 3) Atualizar CLAUDE.md com seção de análise de dados
+    modelo_texto = f"`{modelo}`" if modelo else "padrão do provider"
+    var_modelo_texto = ""
+    if modelo:
+        var_modelo = info['env_var'].replace('_API_KEY', '') + '_MODEL'
+        var_modelo_texto = f"\n- **Modelo:** `{modelo}` (variável: `{var_modelo}`)"
+
     claude_md_path = os.path.join(projeto_dir, "CLAUDE.md")
     secao_ia = f"""
 
@@ -508,12 +747,13 @@ Este projeto usa a API do **{info['nome']}** para análise de dados.
 
 - **Provider:** {info['nome']}
 - **SDK:** `{info['pacote']}`
-- **Variável de ambiente:** `{info['env_var']}` (configurada no `.env`)
+- **Variável de ambiente:** `{info['env_var']}` (configurada no `.env`){var_modelo_texto}
 
 ### Como usar
 
 Quando o usuário pedir para analisar dados, usar a API do {info['nome']} para processar.
 A API key está disponível via `process.env.{info['env_var']}`.
+{f"O modelo a usar está em `process.env.{info['env_var'].replace('_API_KEY', '')}_MODEL`." if modelo else ""}
 
 ### Exemplos de análise que podem ser solicitadas
 
@@ -526,9 +766,10 @@ A API key está disponível via `process.env.{info['env_var']}`.
         with open(claude_md_path, "a") as f:
             f.write(secao_ia)
 
+    modelo_linha = f"\n🤖 <b>Modelo:</b> <code>{modelo}</code>" if modelo else ""
     await msg.reply_text(
         f"✅ IA configurada!\n\n"
-        f"🤖 <b>Provider:</b> {info['nome']}\n"
+        f"🤖 <b>Provider:</b> {info['nome']}{modelo_linha}\n"
         f"🔑 <b>Env:</b> <code>{info['env_var']}</code>\n"
         f"📦 <b>SDK:</b> <code>{info['pacote']}</code>\n\n"
         f"A API key foi salva no <code>.env</code> e a estrutura de análise foi adicionada ao <code>CLAUDE.md</code>.",
