@@ -2,6 +2,7 @@ import os
 import re
 import html
 import asyncio
+import socket
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -14,6 +15,26 @@ _ENV = {**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.envi
 
 # Processos de dev server + tunnel por projeto (para cleanup)
 _tunnel_procs = {}  # nome → {"dev": Process, "tunnel": Process}
+
+_PORTA_INICIAL = 5000
+
+
+def _proxima_porta_livre() -> int:
+    """Encontra a próxima porta livre a partir de _PORTA_INICIAL."""
+    # Portas já em uso pelos tunnels ativos
+    portas_usadas = {info.get("porta") for info in _tunnel_procs.values() if "porta" in info}
+    porta = _PORTA_INICIAL
+    while porta < 6000:
+        if porta in portas_usadas:
+            porta += 1
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("", porta))
+                return porta
+            except OSError:
+                porta += 1
+    raise RuntimeError("Nenhuma porta livre entre 5000-5999")
 
 
 @autorizado
@@ -189,10 +210,11 @@ pnpm biome check  # linter + formatter (Biome)
         )
 
     # Iniciar dev server + tunnel público
-    await msg.reply_text("🌐 Iniciando servidor dev + tunnel público...")
+    porta = _proxima_porta_livre()
+    await msg.reply_text(f"🌐 Iniciando servidor dev (porta {porta}) + tunnel público...")
     try:
         dev_proc = await asyncio.create_subprocess_exec(
-            "pnpm", "dev", "--port", "3000",
+            "pnpm", "dev", "--port", str(porta),
             cwd=projeto_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -201,7 +223,7 @@ pnpm biome check  # linter + formatter (Biome)
         await asyncio.sleep(4)  # esperar o dev server subir
 
         tunnel_proc = await asyncio.create_subprocess_exec(
-            "npx", "localtunnel", "--port", "3000",
+            "npx", "localtunnel", "--port", str(porta),
             cwd=projeto_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -214,10 +236,10 @@ pnpm biome check  # linter + formatter (Biome)
         if "url is:" in tunnel_url.lower():
             tunnel_url = tunnel_url.split("url is:")[-1].strip()
 
-        _tunnel_procs[nome] = {"dev": dev_proc, "tunnel": tunnel_proc}
+        _tunnel_procs[nome] = {"dev": dev_proc, "tunnel": tunnel_proc, "porta": porta}
         await msg.reply_text(
-            f"🌐 URL pública: {tunnel_url}\n\n"
-            f"<code>pnpm dev</code> rodando na porta 3000.\n"
+            f"🌐 <b>URL pública:</b> {tunnel_url}\n"
+            f"🏠 <b>URL local:</b> http://localhost:{porta}\n\n"
             f"Tunnel ativo enquanto o bot estiver rodando.",
             parse_mode="HTML",
         )
