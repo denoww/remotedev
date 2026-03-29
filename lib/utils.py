@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 
 from lib.config import (
     PROJETOS, PROJETO_PADRAO, CHAT_ID, DEFAULT_TIMEOUT,
-    MAX_STDOUT, TELEGRAM_MSG_LIMIT,
+    MAX_STDOUT, TELEGRAM_MSG_LIMIT, BOT_NOME,
 )
 
 # Estado global
@@ -68,6 +68,27 @@ def projeto_label(chat_id: int) -> str:
     return f"{cfg['nome']}"
 
 
+
+
+async def atualizar_nome_bot(bot, chat_id: int):
+    """Atualiza o nome de exibição do bot para refletir o projeto ativo."""
+    cfg = projeto_config(chat_id)
+    if cfg:
+        path = cfg["path"]
+        try:
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=path, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except Exception:
+            branch = ""
+        nome = f"{cfg['nome']} ({branch})" if branch else cfg["nome"]
+    else:
+        nome = f"remotedev ({BOT_NOME})"
+    try:
+        await bot.set_my_name(name=nome[:64])
+    except Exception:
+        pass  # ignora erros silenciosamente (rate limit, etc)
 
 
 async def exigir_projeto(update: Update) -> bool:

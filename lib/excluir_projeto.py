@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from lib.config import PROJETOS, WORKSPACE, BOT_REPO_DIR, descobrir_projetos
-from lib.utils import estado, autorizado
+from lib.utils import estado, autorizado, atualizar_nome_bot
 from lib.novo_projeto import _tunnel_procs
 
 
@@ -110,6 +110,7 @@ async def callback_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for chat_id, proj in list(estado.items()):
         if proj == nome:
             del estado[chat_id]
+            await atualizar_nome_bot(context.bot, chat_id)
 
     # Atualizar lista de projetos
     PROJETOS.clear()

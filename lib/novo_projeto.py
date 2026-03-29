@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from lib.config import PROJETOS, WORKSPACE, descobrir_projetos
-from lib.utils import novo_projeto_pendente, ia_apikey_pendente, ia_modelo_pendente, estado, autorizado
+from lib.utils import novo_projeto_pendente, ia_apikey_pendente, ia_modelo_pendente, estado, autorizado, atualizar_nome_bot
 
 # PATH expandido para subprocessos (systemd não carrega .bashrc)
 _ENV = {**os.environ, "PATH": os.path.expanduser("~/bin") + ":" + os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
@@ -202,11 +202,12 @@ O ngrok tem plano Hobby com **3 endpoints simultâneos**. Cada projeto usa `subd
 ```bash
 # Matar processos anteriores SOMENTE deste projeto
 pkill -f 'vinext dev.*--port {porta}' 2>/dev/null || true
+pkill -f '{nome}-dev.log' 2>/dev/null || true
 pkill -f proxy{porta} 2>/dev/null || true
 sleep 2
 
-# Iniciar dev server em background
-nohup pnpm dev > /tmp/{nome}-dev.log 2>&1 &
+# Iniciar dev server em background com auto-restart (reinicia sozinho se cair)
+nohup bash -c 'while true; do pnpm dev >> /tmp/{nome}-dev.log 2>&1; echo "[$(date)] Server caiu, reiniciando em 2s..." >> /tmp/{nome}-dev.log; sleep 2; done' > /dev/null 2>&1 &
 sleep 5
 
 # Verificar se o servidor subiu
@@ -299,7 +300,8 @@ Depois, envie a URL pública de forma clara e clicável.
     await msg.reply_text(f"🌐 Iniciando servidor dev (porta {porta}) + proxy ({porta_proxy}) + tunnel público...")
     try:
         dev_proc = await asyncio.create_subprocess_exec(
-            "pnpm", "dev",
+            "bash", "-c",
+            f"while true; do pnpm dev >> /tmp/{nome}-dev.log 2>&1; echo \"[$(date)] Server caiu, reiniciando em 2s...\" >> /tmp/{nome}-dev.log; sleep 2; done",
             cwd=projeto_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -401,6 +403,7 @@ proxy.listen({porta_proxy}, "0.0.0.0", () => console.log("proxy on 0.0.0.0:{port
     PROJETOS.update(descobrir_projetos(WORKSPACE))
     if nome in PROJETOS:
         estado[chat_id] = nome
+        await atualizar_nome_bot(msg.get_bot(), chat_id)
         await msg.reply_text(f"📂 Projeto ativo alterado para <b>{nome}</b>.", parse_mode="HTML")
 
     # Perguntar se quer subir pro GitHub
