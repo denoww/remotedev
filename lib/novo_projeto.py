@@ -9,6 +9,9 @@ from telegram.ext import ContextTypes
 from lib.config import PROJETOS, WORKSPACE, descobrir_projetos
 from lib.utils import novo_projeto_pendente, autorizado
 
+# PATH expandido para subprocessos (systemd não carrega .bashrc)
+_ENV = {**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
+
 
 @autorizado
 async def callback_novo_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,6 +46,7 @@ async def criar_projeto(nome: str, chat_id: int, msg):
             "pnpm", "create", "next-app@latest", projeto_dir,
             "--typescript", "--tailwind", "--app", "--use-pnpm",
             "--eslint", "--no-src-dir", "--no-import-alias", "--turbopack",
+            "--no-react-compiler",
         ]),
     ]
 
@@ -51,6 +55,7 @@ async def criar_projeto(nome: str, chat_id: int, msg):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_ENV,
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -70,6 +75,7 @@ async def criar_projeto(nome: str, chat_id: int, msg):
             *cmd, cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_ENV,
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -137,6 +143,7 @@ pnpm biome check  # linter + formatter (Biome)
             *cmd, cwd=projeto_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_ENV,
         )
         await proc.communicate()
 
@@ -145,6 +152,7 @@ pnpm biome check  # linter + formatter (Biome)
         "gh", "repo", "create", nome, "--public", "--source", projeto_dir, "--push",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_ENV,
     )
     stdout, stderr = await proc.communicate()
     gh_output = stdout.decode().strip()
