@@ -12,6 +12,9 @@ from lib.utils import novo_projeto_pendente, autorizado
 # PATH expandido para subprocessos (systemd não carrega .bashrc)
 _ENV = {**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
 
+# Processos de dev server + tunnel por projeto (para cleanup)
+_tunnel_procs = {}  # nome → {"dev": Process, "tunnel": Process}
+
 
 @autorizado
 async def callback_novo_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -184,6 +187,42 @@ pnpm biome check  # linter + formatter (Biome)
             f"Use /projeto para selecioná-lo.",
             parse_mode="HTML",
         )
+
+    # Iniciar dev server + tunnel público
+    await msg.reply_text("🌐 Iniciando servidor dev + tunnel público...")
+    try:
+        dev_proc = await asyncio.create_subprocess_exec(
+            "pnpm", "dev", "--port", "3000",
+            cwd=projeto_dir,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=_ENV,
+        )
+        await asyncio.sleep(4)  # esperar o dev server subir
+
+        tunnel_proc = await asyncio.create_subprocess_exec(
+            "npx", "localtunnel", "--port", "3000",
+            cwd=projeto_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_ENV,
+        )
+        # localtunnel imprime a URL na primeira linha do stdout
+        url_line = await asyncio.wait_for(tunnel_proc.stdout.readline(), timeout=15)
+        tunnel_url = url_line.decode().strip()
+        # Extrair URL — output é "your url is: https://xyz.loca.lt"
+        if "url is:" in tunnel_url.lower():
+            tunnel_url = tunnel_url.split("url is:")[-1].strip()
+
+        _tunnel_procs[nome] = {"dev": dev_proc, "tunnel": tunnel_proc}
+        await msg.reply_text(
+            f"🌐 URL pública: {tunnel_url}\n\n"
+            f"<code>pnpm dev</code> rodando na porta 3000.\n"
+            f"Tunnel ativo enquanto o bot estiver rodando.",
+            parse_mode="HTML",
+        )
+    except (asyncio.TimeoutError, Exception) as e:
+        await msg.reply_text(f"⚠️ Projeto criado, mas erro ao iniciar tunnel:\n<pre>{html.escape(str(e)[:500])}</pre>", parse_mode="HTML")
 
     # Atualizar lista de projetos
     PROJETOS.clear()
