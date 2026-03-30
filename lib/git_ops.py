@@ -23,6 +23,11 @@ def git_push(cwd, timeout=60):
         ).stdout.strip()
         if branch:
             res = rodar(f"git push -u origin {branch}", cwd=cwd, timeout=timeout)
+    # Se rejeitado por non-fast-forward, faz pull --rebase e tenta de novo
+    if res["code"] != 0 and "non-fast-forward" in (res["stderr"] or ""):
+        pull = rodar("git pull --rebase", cwd=cwd, timeout=timeout)
+        if pull["code"] == 0:
+            res = rodar("git push", cwd=cwd, timeout=timeout)
     return res
 
 
