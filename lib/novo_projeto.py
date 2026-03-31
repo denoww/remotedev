@@ -384,10 +384,11 @@ done
         await proc.communicate()
 
     # Iniciar dev server + proxy + tunnel via PM2
+    tunnel_url = ""
     await msg.reply_text(f"🌐 Iniciando PM2 (dev server porta {porta} + proxy {porta_proxy} + ngrok)...")
     try:
         proc = await asyncio.create_subprocess_exec(
-            "pnpm", "pm2",
+            "pnpm", "exec", "pm2", "start", "ecosystem.config.cjs",
             cwd=projeto_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -404,7 +405,6 @@ done
         else:
             # Aguardar ngrok subir e buscar URL pública
             await asyncio.sleep(8)
-            tunnel_url = ""
             try:
                 proc_url = await asyncio.create_subprocess_exec(
                     "curl", "-s", f"http://localhost:4040/api/tunnels/{nome}",
@@ -414,27 +414,11 @@ done
                 tunnel_data = json.loads(url_out.decode())
                 tunnel_url = tunnel_data.get("public_url", "")
             except Exception:
-                pass
-
-            if tunnel_url:
-                await msg.reply_text(
-                    f"🌐 <b>URL pública:</b> {tunnel_url}\n"
-                    f"🏠 <b>URL local:</b> http://localhost:{porta}\n\n"
-                    f"PM2 gerencia 3 processos com auto-restart.\n"
-                    f"Parar: <code>pnpm pm2:stop</code> | Logs: <code>pnpm pm2:logs</code>",
-                    parse_mode="HTML",
-                )
-            else:
-                await msg.reply_text(
-                    f"⚠️ PM2 iniciado mas não consegui obter a URL pública do ngrok.\n\n"
-                    f"🏠 <b>URL local:</b> http://localhost:{porta}\n"
-                    f"🔧 Tente: <code>/bash curl -s http://localhost:4040/api/tunnels</code>",
-                    parse_mode="HTML",
-                )
+                tunnel_url = ""
     except (asyncio.TimeoutError, Exception) as e:
         await msg.reply_text(f"⚠️ Projeto criado, mas erro ao iniciar PM2:\n<pre>{html.escape(str(e)[:500])}</pre>", parse_mode="HTML")
 
-    _tunnel_procs[nome] = {"porta": porta, "porta_proxy": porta_proxy}
+    _tunnel_procs[nome] = {"porta": porta, "porta_proxy": porta_proxy, "tunnel_url": tunnel_url}
 
     # Atualizar lista de projetos e trocar para o novo
     PROJETOS.clear()
@@ -445,18 +429,47 @@ done
         await atualizar_nome_bot(msg.get_bot(), chat_id)
         await msg.reply_text(f"📂 Projeto ativo alterado para <b>{nome}</b>.", parse_mode="HTML")
 
-    # Perguntar se quer subir pro GitHub
+    # Perguntar quem vai usar o projeto (single/multi-user)
+    teclado = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🙋 Só eu", callback_data=f"uso_projeto:single:{nome}"),
+            InlineKeyboardButton("👥 Vários usuários", callback_data=f"uso_projeto:multi:{nome}"),
+        ]
+    ])
+    await msg.reply_text(
+        "👤 Quem vai usar esse projeto?",
+        reply_markup=teclado,
+    )
+
+
+
+@autorizado
+async def callback_uso_projeto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback para escolha de single/multi-user."""
+    query = update.callback_query
+    await query.answer()
+    _, uso, nome = query.data.split(":", 2)
+
+    # Guardar escolha nos metadados do projeto
+    if nome in _tunnel_procs:
+        _tunnel_procs[nome]["multi_user"] = (uso == "multi")
+    else:
+        _tunnel_procs[nome] = {"multi_user": (uso == "multi")}
+
+    label = "vários usuários" if uso == "multi" else "apenas você"
+    await query.edit_message_text(f"👤 Projeto configurado para <b>{label}</b>.", parse_mode="HTML")
+
+    # Seguir para pergunta do GitHub
     teclado = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Sim, subir pro GitHub", callback_data=f"github_novo:sim:{nome}"),
             InlineKeyboardButton("❌ Não", callback_data=f"github_novo:nao:{nome}"),
         ]
     ])
-    await msg.reply_text(
-        f"Deseja criar o repositório no GitHub e fazer push?",
+    await query.message.reply_text(
+        "Deseja criar o repositório no GitHub e fazer push?",
         reply_markup=teclado,
     )
-
 
 
 @autorizado
@@ -582,8 +595,9 @@ async def callback_ia_analise(update: Update, context: ContextTypes.DEFAULT_TYPE
     ])
     await query.edit_message_text(
         "Qual provider de IA você quer usar?\n\n"
-        "💻 <b>Claude Code</b> — usa o CLI local do computador (plano Max, sem custo extra de API)\n"
-        "🔷🟢🟠 — usam API key do provider (créditos à parte)",
+        "⭐ <b>Recomendado:</b> Claude Code — roda no seu computador, "
+        "usa seu plano Max e não gasta nada extra. Ideal pra começar.\n\n"
+        "🔷🟢🟠 — usam API key com créditos à parte (custo por requisição)",
         parse_mode="HTML",
         reply_markup=teclado,
     )
@@ -844,6 +858,16 @@ A API key está disponível via `process.env.{info['env_var']}`.
         parse_mode="HTML",
     )
 
+    await msg.reply_text(
+        f"🏗 <b>Esqueleto montado, falta a alma.</b>\n\n"
+        f"{('🌐 <b>URL pública:</b> ' + _tunnel_procs.get(nome, {}).get('tunnel_url', '') + chr(10)) if _tunnel_procs.get(nome, {}).get('tunnel_url') else ''}"
+        f"O projeto <b>{nome}</b> está no ar, configurado e esperando ordens.\n"
+        f"Me diz o que você quer construir e eu começo a codar. 🚀\n\n"
+        f"💡 <b>Dica:</b> pode mandar prints de erro, vídeos curtos, áudios "
+        f"explicando o problema ou até rabiscos de layout — eu entendo tudo.",
+        parse_mode="HTML",
+    )
+
 
 async def _finalizar_config_claudecode(chat_id: int, nome: str, msg):
     """Configura o projeto para usar Claude Code CLI (computador local) em vez de API."""
@@ -916,5 +940,15 @@ O stream JSON retorna eventos:
         f"📦 <b>Comando:</b> <code>claude -p</code>\n\n"
         f"Usa o plano Max do Claude Code — sem custo extra de API.\n"
         f"Instruções adicionadas ao <code>CLAUDE.md</code>.",
+        parse_mode="HTML",
+    )
+
+    await msg.reply_text(
+        f"🏗 <b>Esqueleto montado, falta a alma.</b>\n\n"
+        f"{('🌐 <b>URL pública:</b> ' + _tunnel_procs.get(nome, {}).get('tunnel_url', '') + chr(10)) if _tunnel_procs.get(nome, {}).get('tunnel_url') else ''}"
+        f"O projeto <b>{nome}</b> está no ar, configurado e esperando ordens.\n"
+        f"Me diz o que você quer construir e eu começo a codar. 🚀\n\n"
+        f"💡 <b>Dica:</b> pode mandar prints de erro, vídeos curtos, áudios "
+        f"explicando o problema ou até rabiscos de layout — eu entendo tudo.",
         parse_mode="HTML",
     )

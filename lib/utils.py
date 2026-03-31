@@ -1,9 +1,11 @@
 import os
 import json
+import time
 import asyncio
 import subprocess
 import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import RetryAfter
 from telegram.ext import ContextTypes
 
 from lib.config import (
@@ -96,11 +98,12 @@ def projeto_label(chat_id: int) -> str:
 
 
 _ultimo_nome_bot = None
+_nome_bot_cooldown = 0.0  # timestamp até quando não tentar set_my_name
 
 
 async def atualizar_nome_bot(bot, chat_id: int):
     """Atualiza o nome de exibição do bot para refletir o projeto ativo."""
-    global _ultimo_nome_bot
+    global _ultimo_nome_bot, _nome_bot_cooldown
     cfg = projeto_config(chat_id)
     if cfg:
         path = cfg["path"]
@@ -117,9 +120,16 @@ async def atualizar_nome_bot(bot, chat_id: int):
     nome = nome[:64]
     if nome == _ultimo_nome_bot:
         return
+    # Respeitar cooldown do flood control
+    if time.time() < _nome_bot_cooldown:
+        _ultimo_nome_bot = None  # forçar retry quando cooldown expirar
+        return
     try:
         await bot.set_my_name(name=nome)
         _ultimo_nome_bot = nome
+    except RetryAfter as e:
+        _nome_bot_cooldown = time.time() + e.retry_after
+        print(f"⚠️ Flood control ao renomear bot para '{nome}': retry em {e.retry_after}s")
     except Exception as e:
         print(f"⚠️ Erro ao atualizar nome do bot para '{nome}': {e}")
 

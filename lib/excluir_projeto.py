@@ -87,7 +87,8 @@ async def callback_excluir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for pm2_proc in [f"{nome}-dev", f"{nome}-proxy", f"{nome}-ngrok"]:
         try:
             proc = await asyncio.create_subprocess_exec(
-                "npx", "pm2", "delete", pm2_proc,
+                "pnpm", "exec", "pm2", "delete", pm2_proc,
+                cwd=projeto_dir,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )

@@ -47,7 +47,7 @@ from lib.git_ops import (
 )
 from lib.hooks import pos_push
 from lib.novo_projeto import (
-    callback_novo_projeto, callback_github_novo, criar_projeto, validar_nome_projeto,
+    callback_novo_projeto, callback_uso_projeto, callback_github_novo, criar_projeto, validar_nome_projeto,
     callback_ia_analise, callback_ia_provider, callback_ia_modelo, processar_apikey_ia,
 )
 from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exclusao, callback_excluir
@@ -583,6 +583,7 @@ def main():
     app.add_handler(CommandHandler("p", cmd_projeto))
     app.add_handler(CommandHandler("projeto", cmd_projeto))
     app.add_handler(CallbackQueryHandler(callback_novo_projeto, pattern=r"^novo_projeto$"))
+    app.add_handler(CallbackQueryHandler(callback_uso_projeto, pattern=r"^uso_projeto:"))
     app.add_handler(CallbackQueryHandler(callback_github_novo, pattern=r"^github_novo:"))
     app.add_handler(CallbackQueryHandler(callback_ia_analise, pattern=r"^ia_analise:"))
     app.add_handler(CallbackQueryHandler(callback_ia_provider, pattern=r"^ia_provider:"))
