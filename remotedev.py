@@ -16,6 +16,7 @@ import html
 import subprocess
 import tempfile
 from datetime import datetime
+from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
@@ -447,6 +448,12 @@ async def mensagem_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_name = f"telegram_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         img_path = os.path.join(tempfile.gettempdir(), img_name)
         await file.download_to_drive(img_path)
+
+        # Redimensiona e comprime para economizar tokens
+        with Image.open(img_path) as img:
+            if max(img.size) > 1024:
+                img.thumbnail((1024, 1024))
+            img.save(img_path, "JPEG", quality=80, optimize=True)
 
         if caption:
             prompt = f"Analise a imagem em {img_path} e responda: {caption}"
