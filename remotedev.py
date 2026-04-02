@@ -72,7 +72,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 <b>Bot [{BOT_NOME}] ativo!</b>\n"
         f"Projeto: {label}\n\n"
         "<b>Claude Code</b>\n"
-        "Texto, áudio ou foto → Claude responde direto\n\n"
+        "Texto, áudio, foto ou documento → Claude responde direto\n\n"
         f"<b>Comandos</b>\n{comandos_help}",
         parse_mode="HTML",
     )
@@ -552,6 +552,42 @@ async def mensagem_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sh.rmtree(tmp_dir, ignore_errors=True)
 
 
+@autorizado
+async def mensagem_documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    if not doc:
+        return
+    if not await exigir_projeto(update):
+        return
+
+    caption = update.message.caption or ""
+
+    try:
+        file = await doc.get_file()
+        nome_original = doc.file_name or "documento"
+        sufixo = os.path.splitext(nome_original)[1] or ""
+        nome_tmp = f"telegram_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{nome_original}"
+        file_path = os.path.join(tempfile.gettempdir(), nome_tmp)
+        await file.download_to_drive(file_path)
+
+        if caption:
+            prompt = f"Leia o arquivo {file_path} (nome original: {nome_original}) e responda: {caption}"
+        else:
+            prompt = f"Leia o arquivo {file_path} (nome original: {nome_original}). Analise o conteúdo e dê um resumo objetivo."
+
+        await enviar_para_claude(update, prompt)
+
+        if os.path.exists(file_path):
+            os.unlink(file_path)
+
+    except Exception as e:
+        erro = str(e)
+        if "file is too big" in erro.lower() or "file_too_big" in erro.lower():
+            await update.message.reply_text("⚠️ Arquivo muito grande. Limite do Telegram: 20MB.")
+        else:
+            await update.message.reply_text(f"❌ Erro ao processar documento: {erro}")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════
@@ -633,6 +669,9 @@ def main():
 
     # Vídeo → extrair frames + áudio → Claude
     app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, mensagem_video))
+
+    # Documentos (PDF, CSV, Excel, etc.) → Claude
+    app.add_handler(MessageHandler(filters.Document.ALL, mensagem_documento))
 
     async def post_init(application):
         commands = []
