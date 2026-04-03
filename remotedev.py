@@ -28,13 +28,14 @@ from telegram.ext import (
 )
 
 from lib.config import (
-    BOT_NOME, TOKEN, CHAT_ID, BOT_SERVICE, BOT_REPO_DIR,
+    BOT_NOME, TOKEN, OWNER_CHAT_ID, BOT_SERVICE, BOT_REPO_DIR,
     PROJETOS, BOTFATHER_COMMANDS, WORKSPACE, descobrir_projetos,
+    USERS_AUTORIZADOS, is_owner, adicionar_user, remover_user, chat_ids_autorizados,
 )
 from lib.utils import (
     estado, _salvar_estado, pendente, push_pendente, novo_projeto_pendente, ia_apikey_pendente, ia_modelo_pendente,
     projeto_ativo, projeto_config, projeto_path, projeto_label,
-    exigir_projeto, autorizado, rodar, rodar_async, enviar_resultado,
+    exigir_projeto, autorizado, apenas_owner, rodar, rodar_async, enviar_resultado,
     atualizar_nome_bot,
 )
 from lib.claude import (
@@ -307,6 +308,81 @@ async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🛑 Fila limpa! [{label}]")
     else:
         await update.message.reply_text(f"ℹ️ Nada para cancelar. [{label}]")
+
+
+@apenas_owner
+async def cmd_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /adduser <chat_id> [nome] — adiciona usuário autorizado.
+    Também funciona encaminhando uma mensagem do usuário com /adduser na legenda.
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: /adduser <chat_id> [nome]\n\n"
+            "Para descobrir o chat_id, peça pra pessoa mandar qualquer mensagem pro bot — "
+            "ela vai receber o chat_id na resposta de 'não autorizado'."
+        )
+        return
+
+    try:
+        new_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ chat_id deve ser um número.")
+        return
+
+    nome = " ".join(context.args[1:]) if len(context.args) > 1 else f"user_{new_id}"
+    adicionar_user(new_id, nome, adicionado_por=str(update.effective_chat.id))
+
+    await update.message.reply_text(
+        f"✅ Usuário adicionado!\n\n"
+        f"Chat ID: <code>{new_id}</code>\n"
+        f"Nome: {nome}\n\n"
+        f"Agora essa pessoa pode usar o bot.",
+        parse_mode="HTML",
+    )
+
+    # Tenta notificar o novo usuário
+    try:
+        await context.bot.send_message(
+            chat_id=new_id,
+            text=f"🎉 Você foi autorizado no bot {BOT_NOME}!\nDigite /menu para ver os comandos.",
+        )
+    except Exception:
+        pass
+
+
+@apenas_owner
+async def cmd_removeuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/removeuser <chat_id> — remove um usuário autorizado."""
+    if not context.args:
+        await update.message.reply_text("Uso: /removeuser <chat_id>")
+        return
+
+    try:
+        rm_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ chat_id deve ser um número.")
+        return
+
+    if is_owner(rm_id):
+        await update.message.reply_text("⚠️ Não é possível remover o owner.")
+        return
+
+    if remover_user(rm_id):
+        await update.message.reply_text(f"✅ Usuário {rm_id} removido.")
+    else:
+        await update.message.reply_text(f"⚠️ Usuário {rm_id} não encontrado na lista.")
+
+
+@autorizado
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/users — lista os usuários autorizados."""
+    linhas = []
+    for uid, info in USERS_AUTORIZADOS.items():
+        owner_tag = " 👑" if is_owner(uid) else ""
+        linhas.append(f"  <code>{uid}</code> — {info.get('nome', '?')}{owner_tag}")
+    texto = f"👥 <b>Usuários autorizados ({len(USERS_AUTORIZADOS)}):</b>\n" + "\n".join(linhas)
+    await update.message.reply_text(texto, parse_mode="HTML")
 
 
 @autorizado
@@ -595,7 +671,10 @@ async def mensagem_documento(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     print(f"🤖 Bot [{BOT_NOME}] iniciando...")
     print(f"📁 Projetos ({len(PROJETOS)}): {', '.join(PROJETOS.keys())}")
-    print(f"🔐 Chat ID autorizado: {CHAT_ID}")
+    print(f"🔐 Owner Chat ID: {OWNER_CHAT_ID}")
+    print(f"👥 Usuários autorizados: {len(USERS_AUTORIZADOS)}")
+    for uid, info in USERS_AUTORIZADOS.items():
+        print(f"   {uid}: {info.get('nome', '?')}")
 
     if "--get-chat-id" in sys.argv:
         if not TOKEN:
@@ -606,18 +685,20 @@ def main():
 
         async def mostrar_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cid = update.effective_chat.id
-            print(f"\n✅ Seu CHAT_ID: {cid}\n")
-            await update.message.reply_text(f"Seu chat_id: {cid}\nColoque no script e reinicie.")
+            user = update.effective_user
+            nome = user.first_name if user else "?"
+            print(f"\n✅ CHAT_ID: {cid} (nome: {nome})\n")
+            await update.message.reply_text(f"Seu chat_id: <code>{cid}</code>\nNome: {nome}", parse_mode="HTML")
 
         app = Application.builder().token(TOKEN).build()
         app.add_handler(MessageHandler(filters.ALL, mostrar_id))
         app.run_polling()
         return
 
-    if not TOKEN or CHAT_ID == 0:
+    if not TOKEN or OWNER_CHAT_ID == 0:
         print(f"\n⚠️  Configure as variáveis para o bot '{BOT_NOME}':")
         print(f"   TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN")
-        print(f"   TELEGRAM_{BOT_NOME.upper()}_CHAT_ID")
+        print(f"   TELEGRAM_{BOT_NOME.upper()}_CHAT_ID (owner)")
         return
 
     app = Application.builder().token(TOKEN).concurrent_updates(True).build()
@@ -654,6 +735,9 @@ def main():
     app.add_handler(CommandHandler("gitpush", cmd_push))
     app.add_handler(CommandHandler("restart_bot", cmd_restart))
     app.add_handler(CommandHandler("restart_todos", cmd_restart_todos))
+    app.add_handler(CommandHandler("adduser", cmd_adduser))
+    app.add_handler(CommandHandler("removeuser", cmd_removeuser))
+    app.add_handler(CommandHandler("users", cmd_users))
 
     # Comando desconhecido
     @autorizado
@@ -681,32 +765,36 @@ def main():
                 commands.append(BotCommand(cmd.strip(), desc.strip()))
         await application.bot.set_my_commands(commands)
 
-        # Se já tem projeto ativo restaurado do disco, apenas informa
-        proj_restaurado = projeto_ativo(CHAT_ID)
-        if proj_restaurado and proj_restaurado in descobrir_projetos(WORKSPACE):
-            label = projeto_label(CHAT_ID)
-            await atualizar_nome_bot(application.bot, CHAT_ID)
-            await application.bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"🟢 {BOT_NOME} iniciado!\n📂 Projeto restaurado: *{label}*",
-                parse_mode="Markdown",
-            )
-        else:
-            await atualizar_nome_bot(application.bot, CHAT_ID)
-            projetos_atuais = descobrir_projetos(WORKSPACE)
-            teclado = [
-                [InlineKeyboardButton(cfg['nome'], callback_data=f"projeto:{key}")]
-                for key, cfg in projetos_atuais.items()
-            ]
-            teclado.append([
-                InlineKeyboardButton("➕ Novo Projeto", callback_data="novo_projeto"),
-                InlineKeyboardButton("🗑 Excluir Projeto", callback_data="excluir_projeto"),
-            ])
-            await application.bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"🟢 {BOT_NOME} iniciado!\nEscolha o projeto:",
-                reply_markup=InlineKeyboardMarkup(teclado),
-            )
+        # Notifica todos os usuários autorizados
+        for uid in chat_ids_autorizados():
+            try:
+                proj_restaurado = projeto_ativo(uid)
+                if proj_restaurado and proj_restaurado in descobrir_projetos(WORKSPACE):
+                    label = projeto_label(uid)
+                    await atualizar_nome_bot(application.bot, uid)
+                    await application.bot.send_message(
+                        chat_id=uid,
+                        text=f"🟢 {BOT_NOME} iniciado!\n📂 Projeto restaurado: *{label}*",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await atualizar_nome_bot(application.bot, uid)
+                    projetos_atuais = descobrir_projetos(WORKSPACE)
+                    teclado = [
+                        [InlineKeyboardButton(cfg['nome'], callback_data=f"projeto:{key}")]
+                        for key, cfg in projetos_atuais.items()
+                    ]
+                    teclado.append([
+                        InlineKeyboardButton("➕ Novo Projeto", callback_data="novo_projeto"),
+                        InlineKeyboardButton("🗑 Excluir Projeto", callback_data="excluir_projeto"),
+                    ])
+                    await application.bot.send_message(
+                        chat_id=uid,
+                        text=f"🟢 {BOT_NOME} iniciado!\nEscolha o projeto:",
+                        reply_markup=InlineKeyboardMarkup(teclado),
+                    )
+            except Exception as e:
+                print(f"⚠️ Erro ao notificar usuário {uid}: {e}")
 
     app.post_init = post_init
     print("✅ Bot rodando! Ctrl+C pra parar.\n")

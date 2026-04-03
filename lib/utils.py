@@ -9,8 +9,9 @@ from telegram.error import RetryAfter
 from telegram.ext import ContextTypes
 
 from lib.config import (
-    PROJETOS, PROJETO_PADRAO, CHAT_ID, DEFAULT_TIMEOUT,
+    PROJETOS, PROJETO_PADRAO, OWNER_CHAT_ID, DEFAULT_TIMEOUT,
     MAX_STDOUT, TELEGRAM_MSG_LIMIT, BOT_NOME, BOT_REPO_DIR,
+    is_autorizado, is_owner, adicionar_user,
 )
 
 # Persistência do estado
@@ -156,9 +157,27 @@ async def exigir_projeto(update: Update) -> bool:
 def autorizado(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
-        if chat_id != CHAT_ID:
+        if not is_autorizado(chat_id):
             if update.message:
-                await update.message.reply_text("⛔ Não autorizado.")
+                user = update.effective_user
+                nome = user.first_name if user else str(chat_id)
+                await update.message.reply_text(
+                    f"⛔ Não autorizado.\n\nSeu chat_id: <code>{chat_id}</code>\nNome: {nome}\n\n"
+                    "Peça ao dono do bot para te adicionar com /adduser",
+                    parse_mode="HTML",
+                )
+            return
+        return await func(update, context)
+    return wrapper
+
+
+def apenas_owner(func):
+    """Decorator para comandos exclusivos do owner (ex: /adduser, /removeuser)."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        if not is_owner(chat_id):
+            if update.message:
+                await update.message.reply_text("⛔ Apenas o dono do bot pode usar este comando.")
             return
         return await func(update, context)
     return wrapper
