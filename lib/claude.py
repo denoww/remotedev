@@ -6,7 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
-from lib.config import BOT_NOME, BOT_REPO_DIR, CLAUDE_TIMEOUT, MAX_STDOUT, LOG_MAX_BYTES, LOG_BACKUP_COUNT
+from lib.config import BOT_NOME, BOT_REPO_DIR, CLAUDE_TIMEOUT, MAX_STDOUT, LOG_MAX_BYTES, LOG_BACKUP_COUNT, TELEGRAM_MSG_LIMIT
 from lib.utils import rodar, projeto_path, projeto_label
 from lib.hooks import git_remote_hash, detectar_eventos, executar_hooks
 
@@ -187,7 +187,10 @@ async def rodar_claude_completo(msg, chat_id, prompt):
 
         logar_claude(label, cwd, f"{log_prefix}{prompt}", res, texto_resposta)
 
-        await msg.reply_text(texto_resposta or "(sem resposta)")
+        texto = texto_resposta or "(sem resposta)"
+        pedacos = [texto[i:i + TELEGRAM_MSG_LIMIT] for i in range(0, len(texto), TELEGRAM_MSG_LIMIT)]
+        for pedaco in pedacos:
+            await msg.reply_text(pedaco)
         eventos = detectar_eventos(cwd, hash_antes)
         hooks_msgs = executar_hooks(cwd, eventos)
         for h in hooks_msgs:
