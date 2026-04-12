@@ -1,10 +1,12 @@
 {
   "176892427": {
     "nome": "owner",
-    "adicionado_por": "env"
+    "adicionado_por": "env",
+    "role": "owner"
   },
   "8609151020": {
-    "nome": "user_8609151020",
-    "adicionado_por": "176892427"
+    "nome": "rodS26ultra",
+    "adicionado_por": "176892427",
+    "role": "owner"
   }
 }

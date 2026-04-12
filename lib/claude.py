@@ -63,7 +63,12 @@ def logar_claude(label, cwd, prompt, res, texto_resposta):
 
 def rodar_claude(prompt, cwd, session_id=None):
     """Roda o Claude via stdin e retorna (res, texto_resposta, session_id)."""
-    flags = ['--dangerously-skip-permissions', '--output-format', 'json', '--verbose']
+    system_prompt = (
+        "Nunca use tabelas Markdown (sintaxe `| col |`). "
+        "Use listas com `-` ou texto corrido no lugar de tabelas."
+    )
+    flags = ['--dangerously-skip-permissions', '--output-format', 'json', '--verbose',
+             '--system-prompt', system_prompt]
     cmd_args = ['claude', '-p', '-'] + flags
     if session_id:
         cmd_args += ['--resume', session_id]
