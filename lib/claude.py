@@ -19,6 +19,35 @@ claude_cancelado = set()  # cwds com stop ativo
 # Lock file para sinalizar que Claude está rodando (evita restart durante execução)
 CLAUDE_LOCK_FILE = f"/tmp/remotedev-claude-{BOT_NOME}.lock"
 
+# Arquivo com o modelo escolhido (global por bot). Ausente = padrão do CLI.
+MODELO_FILE = os.path.join(BOT_REPO_DIR, f".modelo-{BOT_NOME}.json")
+
+# Modelos aceitos pelo --model do claude CLI (aliases)
+MODELOS_VALIDOS = ("opus", "sonnet", "haiku")
+
+
+def carregar_modelo() -> str | None:
+    """Retorna modelo salvo (ex: 'opus') ou None para usar padrão do CLI."""
+    try:
+        with open(MODELO_FILE) as f:
+            valor = json_mod.load(f).get("modelo")
+        return valor if valor in MODELOS_VALIDOS else None
+    except (FileNotFoundError, json_mod.JSONDecodeError, OSError):
+        return None
+
+
+def salvar_modelo(modelo: str | None) -> None:
+    """Persiste escolha de modelo. None remove o arquivo (volta ao padrão)."""
+    try:
+        if modelo is None:
+            if os.path.exists(MODELO_FILE):
+                os.remove(MODELO_FILE)
+            return
+        with open(MODELO_FILE, "w") as f:
+            json_mod.dump({"modelo": modelo}, f)
+    except OSError:
+        pass
+
 
 def _criar_lock():
     """Cria lock file indicando que o Claude está em execução."""
@@ -69,6 +98,9 @@ def rodar_claude(prompt, cwd, session_id=None):
     )
     flags = ['--dangerously-skip-permissions', '--output-format', 'json', '--verbose',
              '--system-prompt', system_prompt]
+    modelo = carregar_modelo()
+    if modelo:
+        flags += ['--model', modelo]
     cmd_args = ['claude', '-p', '-'] + flags
     if session_id:
         cmd_args += ['--resume', session_id]

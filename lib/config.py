@@ -42,6 +42,7 @@ BOTFATHER_COMMANDS = (
     "restart_claude - Para todos os processos Claude e limpa sessoes\n"
     "restart_bot - Reinicia o bot\n"
     "limpar_conversa - Limpa conversa do Claude\n"
+    "model - Escolhe modelo do Claude (opus, sonnet, haiku)\n"
     "restart_todos - Reinicia todos os bots da maquina\n"
     "reboot_pc - Reinicia o computador\n"
     "gitdiff - Mostra diff e sugere mensagem de commit\n"

@@ -43,8 +43,9 @@ from lib.utils import (
 )
 from lib.claude import (
     claude_sessions, claude_cancelado, claude_processos, claude_locks,
-    CLAUDE_LOCK_FILE,
+    CLAUDE_LOCK_FILE, MODELOS_VALIDOS,
     enviar_para_claude, rodar_claude_completo,
+    carregar_modelo, salvar_modelo,
 )
 from lib.git_ops import (
     cmd_diff, cmd_push, cmd_gitbranch, cmd_gitreset,
@@ -346,6 +347,57 @@ async def cmd_restart_claude(update: Update, context: ContextTypes.DEFAULT_TYPE)
         partes.append(f"{sessoes} sessão(ões) limpas")
     detalhe = ", ".join(partes) if partes else "nada estava rodando"
     await update.message.reply_text(f"🔄 Claude reiniciado — {detalhe}.")
+
+
+@autorizado
+async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Escolhe o modelo do Claude (opus, sonnet, haiku) ou volta ao padrão."""
+    atual = carregar_modelo()
+    atual_texto = atual or "padrão"
+
+    # Mudança direta via argumento: /model opus
+    if context.args:
+        escolha = context.args[0].lower()
+        if escolha in ("padrao", "padrão", "default", "-"):
+            salvar_modelo(None)
+            await update.message.reply_text("🤖 Modelo: padrão (CLI decide)")
+            return
+        if escolha in MODELOS_VALIDOS:
+            salvar_modelo(escolha)
+            await update.message.reply_text(f"🤖 Modelo definido: <b>{escolha}</b>", parse_mode="HTML")
+            return
+        opcoes = ", ".join(MODELOS_VALIDOS)
+        await update.message.reply_text(f"Modelo inválido. Use: {opcoes}, padrao")
+        return
+
+    teclado = []
+    for op in MODELOS_VALIDOS:
+        marcador = " ✅" if atual == op else ""
+        teclado.append([InlineKeyboardButton(f"{op.capitalize()}{marcador}", callback_data=f"model:{op}")])
+    marcador_padrao = " ✅" if atual is None else ""
+    teclado.append([InlineKeyboardButton(f"Padrão{marcador_padrao}", callback_data="model:padrao")])
+
+    await update.message.reply_text(
+        f"🤖 <b>Modelo atual:</b> {atual_texto}\n\nEscolha o modelo:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(teclado),
+    )
+
+
+@autorizado
+async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    escolha = query.data.replace("model:", "")
+    if escolha == "padrao":
+        salvar_modelo(None)
+        await query.edit_message_text("🤖 Modelo definido: <b>padrão</b> (CLI decide)", parse_mode="HTML")
+        return
+    if escolha not in MODELOS_VALIDOS:
+        await query.edit_message_text("Modelo inválido.")
+        return
+    salvar_modelo(escolha)
+    await query.edit_message_text(f"🤖 Modelo definido: <b>{escolha}</b>", parse_mode="HTML")
 
 
 @autorizado
@@ -727,6 +779,8 @@ def main():
     app.add_handler(CommandHandler("limpar_conversa", cmd_new_session))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CommandHandler("restart_claude", cmd_restart_claude))
+    app.add_handler(CommandHandler("model", cmd_model))
+    app.add_handler(CallbackQueryHandler(callback_model, pattern=r"^model:"))
     app.add_handler(CommandHandler("gitdiff", cmd_diff))
     app.add_handler(CommandHandler("gitreset", cmd_gitreset))
     app.add_handler(CommandHandler("gitbranch", cmd_gitbranch))
