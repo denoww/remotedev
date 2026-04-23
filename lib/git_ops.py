@@ -227,6 +227,21 @@ async def callback_push(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @autorizado
+async def cmd_gitpull(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Faz git pull --rebase no projeto ativo."""
+    if not await exigir_projeto(update):
+        return
+
+    chat_id = update.effective_chat.id
+    cwd = projeto_path(chat_id)
+    label = projeto_label(chat_id)
+
+    await update.message.reply_text(f"⏳ [{label}] git pull --rebase...")
+    res = await rodar_async("git pull --rebase", cwd=cwd, timeout=60)
+    await enviar_resultado(update, res, "git pull --rebase")
+
+
+@autorizado
 async def cmd_gitbranch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Troca de branch (cria se não existir) e faz git pull."""
     if not await exigir_projeto(update):

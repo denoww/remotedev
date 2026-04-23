@@ -48,7 +48,7 @@ from lib.claude import (
     carregar_modelo, salvar_modelo,
 )
 from lib.git_ops import (
-    cmd_diff, cmd_push, cmd_gitbranch, cmd_gitreset,
+    cmd_diff, cmd_push, cmd_gitbranch, cmd_gitpull, cmd_gitreset,
     callback_branch, callback_push, callback_reset, callback_resumo_diff,
     _enviar_diff, _gerar_commit_ia, git_push,
 )
@@ -784,6 +784,7 @@ def main():
     app.add_handler(CommandHandler("gitdiff", cmd_diff))
     app.add_handler(CommandHandler("gitreset", cmd_gitreset))
     app.add_handler(CommandHandler("gitbranch", cmd_gitbranch))
+    app.add_handler(CommandHandler("gitpull", cmd_gitpull))
     app.add_handler(CommandHandler("gitpush", cmd_push))
     app.add_handler(CommandHandler("reboot_pc", cmd_reboot_pc))
     app.add_handler(CallbackQueryHandler(callback_reboot, pattern=r"^reboot:"))

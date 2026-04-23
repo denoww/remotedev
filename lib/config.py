@@ -50,6 +50,7 @@ BOTFATHER_COMMANDS = (
     "bash - Roda um comando no terminal\n"
     "ngrok - Gerencia tunnel ngrok do projeto\n"
     "gitbranch - Troca ou cria branch\n"
+    "gitpull - git pull --rebase no projeto ativo\n"
     "gitreset - Descarta todas as alteracoes locais\n"
     "ping_pc - Checa se o desktop esta ligado\n"
     "users - Gerenciar usuarios autorizados\n"
@@ -57,7 +58,7 @@ BOTFATHER_COMMANDS = (
 )
 
 DEFAULT_TIMEOUT = 120
-CLAUDE_TIMEOUT = 2400
+CLAUDE_TIMEOUT = 28800
 MAX_STDOUT = 3800          # truncar stdout acima disso
 MAX_DIFF = 8000            # truncar diff enviado pro Claude
 TELEGRAM_MSG_LIMIT = 4096  # limite do Telegram por mensagem
