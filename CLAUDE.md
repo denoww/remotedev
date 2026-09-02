@@ -35,6 +35,14 @@ Em produção roda como systemd user service (`remotedev-<nome>`).
 - Projetos são auto-descobertos de ~/workspace (qualquer diretório não-oculto)
 - Cada chat pode ter um projeto ativo por vez (estado em memória)
 - Bot roda em produção — testar antes de alterar handlers ou config
+- **Este diretório é o deploy.** Os services systemd rodam direto de
+  `~/workspace/remotedev`; não há build nem cópia. Editar um arquivo aqui já muda o
+  que o próximo start vai carregar, e o `git pull --ff-only` do `ExecStartPre` só
+  sincroniza com o remoto — não protege de edição local em andamento. Consequência:
+  se um bot reiniciar no meio de uma edição (reboot, `Restart=always` após queda),
+  ele sobe com código pela metade. Ao mexer em `remotedev.py` ou `lib/`, deixe o
+  arquivo sempre num estado que compila (`venv/bin/python3 -m py_compile`) antes de
+  parar o trabalho.
 - Ao adicionar/remover comandos: atualizar `BOTFATHER_COMMANDS` em `lib/config.py` (fonte única) e o `README.md`
 
 ## Debugging

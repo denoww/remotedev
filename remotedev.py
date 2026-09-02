@@ -13,6 +13,7 @@ Uso:
 import os
 import sys
 import html
+import asyncio
 import subprocess
 import tempfile
 import time
@@ -796,39 +797,19 @@ async def mensagem_documento(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # MAIN
 # ══════════════════════════════════════════════════════════════════════
 
-def main():
-    print(f"🤖 Bot [{BOT_NOME}] iniciando...")
-    print(f"📁 Projetos ({len(PROJETOS)}): {', '.join(PROJETOS.keys())}")
-    print(f"🔐 Owner Chat ID: {OWNER_CHAT_ID}")
-    print(f"👥 Usuários autorizados: {len(USERS_AUTORIZADOS)}")
-    for uid, info in USERS_AUTORIZADOS.items():
-        print(f"   {uid}: {info.get('nome', '?')}")
+# Notificação de boot só na primeira tentativa: um retry de rede não deve
+# encher o Telegram de "bot iniciado".
+_boot_notificado = False
 
-    if "--get-chat-id" in sys.argv:
-        if not TOKEN:
-            print(f"\n⚠️  Configure TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN primeiro!")
-            return
 
-        print("\n📱 Mande qualquer mensagem pro bot no Telegram...")
+def construir_app():
+    """Monta uma Application nova, com handlers e post_init.
 
-        async def mostrar_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            cid = update.effective_chat.id
-            user = update.effective_user
-            nome = user.first_name if user else "?"
-            print(f"\n✅ CHAT_ID: {cid} (nome: {nome})\n")
-            await update.message.reply_text(f"Seu chat_id: <code>{cid}</code>\nNome: {nome}", parse_mode="HTML")
-
-        app = Application.builder().token(TOKEN).build()
-        app.add_handler(MessageHandler(filters.ALL, mostrar_id))
-        app.run_polling()
-        return
-
-    if not TOKEN or OWNER_CHAT_ID == 0:
-        print(f"\n⚠️  Configure as variáveis para o bot '{BOT_NOME}':")
-        print(f"   TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN")
-        print(f"   TELEGRAM_{BOT_NOME.upper()}_CHAT_ID (owner)")
-        return
-
+    Precisa ser refeita a cada tentativa de polling: o run_polling do PTB dá
+    shutdown na Application e fecha o event loop ao sair (loop.close() no
+    finally do __run), então reaproveitar qualquer um dos dois estoura
+    "RuntimeError: Event loop is closed".
+    """
     # Timeouts curtos no long polling pra detectar conexões mortas rapidamente
     # (sem isso, conexões TCP derrubadas por NAT/gateway prendem o getUpdates
     # até um timeout muito longo, e mensagens só chegam quando uma segunda força reconexão).
@@ -917,6 +898,11 @@ def main():
                 commands.append(BotCommand(cmd.strip(), desc.strip()))
         await application.bot.set_my_commands(commands)
 
+        global _boot_notificado
+        if _boot_notificado:
+            return
+        _boot_notificado = True
+
         # Notifica todos os usuários autorizados
         for uid in chat_ids_autorizados():
             try:
@@ -969,13 +955,52 @@ def main():
                 print(f"⚠️ Erro ao oferecer retomada: {e}")
 
     app.post_init = post_init
+    return app
+
+
+def main():
+    print(f"🤖 Bot [{BOT_NOME}] iniciando...")
+    print(f"📁 Projetos ({len(PROJETOS)}): {', '.join(PROJETOS.keys())}")
+    print(f"🔐 Owner Chat ID: {OWNER_CHAT_ID}")
+    print(f"👥 Usuários autorizados: {len(USERS_AUTORIZADOS)}")
+    for uid, info in USERS_AUTORIZADOS.items():
+        print(f"   {uid}: {info.get('nome', '?')}")
+
+    if "--get-chat-id" in sys.argv:
+        if not TOKEN:
+            print(f"\n⚠️  Configure TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN primeiro!")
+            return
+
+        print("\n📱 Mande qualquer mensagem pro bot no Telegram...")
+
+        async def mostrar_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            cid = update.effective_chat.id
+            user = update.effective_user
+            nome = user.first_name if user else "?"
+            print(f"\n✅ CHAT_ID: {cid} (nome: {nome})\n")
+            await update.message.reply_text(f"Seu chat_id: <code>{cid}</code>\nNome: {nome}", parse_mode="HTML")
+
+        app = Application.builder().token(TOKEN).build()
+        app.add_handler(MessageHandler(filters.ALL, mostrar_id))
+        app.run_polling()
+        return
+
+    if not TOKEN or OWNER_CHAT_ID == 0:
+        print(f"\n⚠️  Configure as variáveis para o bot '{BOT_NOME}':")
+        print(f"   TELEGRAM_BOT_{BOT_NOME.upper()}_TOKEN")
+        print(f"   TELEGRAM_{BOT_NOME.upper()}_CHAT_ID (owner)")
+        return
+
     print("✅ Bot rodando! Ctrl+C pra parar.\n")
     # timeout=10 → Telegram segura o long-poll por 10s; com read_timeout=15 acima,
     # se a conexão morrer o httpx detecta em ~15s e o polling retoma rápido.
-    # Loop de retry: rede flaky não pode matar o processo (evita restart loop do systemd).
+    # Loop de retry: rede flaky não pode matar o processo (evita restart loop do
+    # systemd, que com StartLimitBurst=5 desistiria de vez depois de 5 quedas).
     while True:
         try:
-            app.run_polling(allowed_updates=Update.ALL_TYPES, timeout=10)
+            # Loop e Application novos a cada volta — os anteriores foram fechados.
+            asyncio.set_event_loop(asyncio.new_event_loop())
+            construir_app().run_polling(allowed_updates=Update.ALL_TYPES, timeout=10)
             break
         except (TimedOut, NetworkError) as e:
             print(f"⚠️  Erro de rede ({type(e).__name__}: {e}). Retentando em 10s...")
