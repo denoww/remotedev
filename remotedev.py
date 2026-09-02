@@ -49,6 +49,7 @@ from lib.claude import (
     enviar_para_claude, rodar_claude_completo,
     carregar_modelo, salvar_modelo,
     claude_em_execucao, bots_com_claude_rodando, limpar_sessao,
+    limpar_todas_sessoes, recuperar_interrompidas,
 )
 from lib.git_ops import (
     cmd_diff, cmd_push, cmd_gitbranch, cmd_gitpull, cmd_gitreset,
@@ -335,8 +336,7 @@ async def cmd_restart_claude(update: Update, context: ContextTypes.DEFAULT_TYPE)
             mortos += 1
         claude_processos.pop(cwd, None)
 
-    sessoes = len(claude_sessions)
-    claude_sessions.clear()
+    sessoes = limpar_todas_sessoes()
     claude_cancelado.clear()
     claude_locks.clear()
 
@@ -516,6 +516,30 @@ async def _disparar_restart_todos(responder):
     await responder(f"🔄 Atualizando e reiniciando todos: {nomes}...")
     restart_cmd = " && ".join(f"systemctl --user restart {s}" for s in services)
     subprocess.Popen(f"sleep 2 && cd {BOT_REPO_DIR} && git pull && {restart_cmd}", shell=True)
+
+
+# Execuções que o restart pegou no meio, à espera de o usuário decidir
+interrompidas = []
+
+
+@autorizado
+async def callback_retomar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "retomar:nao":
+        await query.edit_message_text("❌ Execução descartada.")
+        return
+    try:
+        item = interrompidas[int(query.data.split(":")[1])]
+    except (ValueError, IndexError):
+        await query.edit_message_text("ℹ️ Essa execução não está mais disponível.")
+        return
+    if item.get("consumida"):
+        await query.edit_message_text("ℹ️ Essa execução já foi retomada.")
+        return
+    item["consumida"] = True
+    await query.edit_message_text(f"🔁 Retomando [{item.get('label', '?')}]...")
+    await rodar_claude_completo(query.message, item["chat_id"], item["prompt"])
 
 
 @autorizado
@@ -863,6 +887,7 @@ def main():
     app.add_handler(CommandHandler("restart_bot", cmd_restart))
     app.add_handler(CommandHandler("restart_todos", cmd_restart_todos))
     app.add_handler(CallbackQueryHandler(callback_restart, pattern=r"^rst:"))
+    app.add_handler(CallbackQueryHandler(callback_retomar, pattern=r"^retomar:"))
     app.add_handler(CommandHandler("users", autorizado(cmd_users)))
     app.add_handler(CallbackQueryHandler(callback_users, pattern=r"^users:"))
 
@@ -899,10 +924,11 @@ def main():
                 if proj_restaurado and proj_restaurado in descobrir_projetos(WORKSPACE):
                     label = projeto_label(uid)
                     await atualizar_nome_bot(application.bot, uid)
+                    texto = f"🟢 {BOT_NOME} iniciado!\n📂 Projeto restaurado: *{label}*"
+                    if (uid, projeto_path(uid)) in claude_sessions:
+                        texto += "\n💬 Conversa anterior retomada"
                     await application.bot.send_message(
-                        chat_id=uid,
-                        text=f"🟢 {BOT_NOME} iniciado!\n📂 Projeto restaurado: *{label}*",
-                        parse_mode="Markdown",
+                        chat_id=uid, text=texto, parse_mode="Markdown",
                     )
                 else:
                     await atualizar_nome_bot(application.bot, uid)
@@ -922,6 +948,25 @@ def main():
                     )
             except Exception as e:
                 print(f"⚠️ Erro ao notificar usuário {uid}: {e}")
+
+        # Execução que o restart (ou o reboot do PC) pegou no meio: o usuário
+        # decide se retoma. Nada é reexecutado automaticamente.
+        interrompidas.extend(recuperar_interrompidas())
+        for i, item in enumerate(interrompidas):
+            try:
+                resumo = " ".join(item["prompt"].split())[:250]
+                teclado = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔁 Retomar", callback_data=f"retomar:{i}"),
+                    InlineKeyboardButton("❌ Descartar", callback_data="retomar:nao"),
+                ]])
+                await application.bot.send_message(
+                    chat_id=item["chat_id"],
+                    text=(f"⚠️ Uma execução foi interrompida [{item.get('label', '?')}]:\n\n"
+                          f"«{resumo}»\n\nQuer retomar?"),
+                    reply_markup=teclado,
+                )
+            except Exception as e:
+                print(f"⚠️ Erro ao oferecer retomada: {e}")
 
     app.post_init = post_init
     print("✅ Bot rodando! Ctrl+C pra parar.\n")

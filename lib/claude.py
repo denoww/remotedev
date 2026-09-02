@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import glob
 import threading
@@ -20,6 +21,7 @@ claude_processos = {}  # cwd → subprocess.Popen
 claude_inicio = {}  # cwd → epoch do início da execução
 claude_locks = {}  # cwd → asyncio.Lock
 claude_cancelado = set()  # cwds com stop ativo
+execucoes_ativas = {}  # cwd → execução em andamento (persistida para sobreviver a restart)
 
 # Lock file por bot: sinaliza que há Claude rodando. Serve para os outros bots
 # da máquina detectarem execução em andamento antes de um /restart_todos.
@@ -28,6 +30,15 @@ CLAUDE_LOCK_GLOB = "/tmp/remotedev-claude-*.lock"
 
 # Arquivo com o modelo escolhido (global por bot). Ausente = padrão do CLI.
 MODELO_FILE = os.path.join(BOT_REPO_DIR, f".modelo-{BOT_NOME}.json")
+
+# Sessões do Claude por chat/projeto, para sobreviver a restart do bot ou do PC.
+SESSOES_FILE = os.path.join(BOT_REPO_DIR, f".sessoes-{BOT_NOME}.json")
+
+# Execuções em andamento: se o bot morrer no meio, dá para oferecer retomada.
+EXECUCAO_FILE = os.path.join(BOT_REPO_DIR, f".execucao-{BOT_NOME}.json")
+
+# Onde o Claude Code guarda o histórico: ~/.claude/projects/<projeto>/<uuid>.jsonl
+PROJETOS_CLAUDE_DIR = os.path.expanduser("~/.claude/projects")
 
 # Modelos aceitos pelo --model do claude CLI (aliases)
 MODELOS_VALIDOS = ("opus", "sonnet", "haiku")
@@ -59,6 +70,87 @@ def salvar_modelo(modelo: str | None) -> None:
             json_mod.dump({"modelo": modelo}, f)
     except OSError:
         pass
+
+
+def _sessao_em_disco(session_id):
+    """O CLI só consegue dar --resume se o .jsonl da sessão ainda existir."""
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id or ""):
+        return False
+    return bool(glob.glob(os.path.join(PROJETOS_CLAUDE_DIR, "*", f"{session_id}.jsonl")))
+
+
+def _carregar_sessoes():
+    """Restaura o mapa (chat_id, cwd) → session_id, descartando o que sumiu do disco."""
+    try:
+        with open(SESSOES_FILE) as f:
+            dados = json_mod.load(f)
+    except (FileNotFoundError, json_mod.JSONDecodeError, OSError):
+        return {}
+    restauradas = {}
+    for chat_id, projetos in (dados or {}).items():
+        if not isinstance(projetos, dict):
+            continue
+        for cwd, session_id in projetos.items():
+            if _sessao_em_disco(session_id):
+                with contextlib.suppress(ValueError):
+                    restauradas[(int(chat_id), cwd)] = session_id
+    return restauradas
+
+
+def _salvar_sessoes():
+    """Grava o mapa de sessões. Chamado a cada mudança — o arquivo é pequeno."""
+    dados = {}
+    for (chat_id, cwd), session_id in claude_sessions.items():
+        dados.setdefault(str(chat_id), {})[cwd] = session_id
+    try:
+        with open(SESSOES_FILE, "w") as f:
+            json_mod.dump(dados, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def limpar_todas_sessoes():
+    """Descarta todas as sessões (usado pelo /restart_claude). Devolve quantas eram."""
+    total = len(claude_sessions)
+    claude_sessions.clear()
+    _salvar_sessoes()
+    return total
+
+
+def _gravar_execucoes():
+    try:
+        if not execucoes_ativas:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(EXECUCAO_FILE)
+            return
+        with open(EXECUCAO_FILE, "w") as f:
+            json_mod.dump(execucoes_ativas, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _registrar_execucao(cwd, chat_id, label, prompt):
+    execucoes_ativas[cwd] = {"chat_id": chat_id, "label": label,
+                             "prompt": prompt, "inicio": time.time()}
+    _gravar_execucoes()
+
+
+def _encerrar_execucao(cwd):
+    execucoes_ativas.pop(cwd, None)
+    _gravar_execucoes()
+
+
+def recuperar_interrompidas():
+    """Execuções que estavam rodando quando o bot morreu. Consome o arquivo."""
+    try:
+        with open(EXECUCAO_FILE) as f:
+            dados = json_mod.load(f)
+    except (FileNotFoundError, json_mod.JSONDecodeError, OSError):
+        return []
+    with contextlib.suppress(OSError):
+        os.remove(EXECUCAO_FILE)
+    return [dict(cwd=cwd, **d) for cwd, d in (dados or {}).items()
+            if isinstance(d, dict) and d.get("chat_id") and d.get("prompt")]
 
 
 def _criar_lock():
@@ -102,7 +194,10 @@ def bots_com_claude_rodando():
 
 def limpar_sessao(chat_id, cwd):
     """Descarta a sessão do Claude daquele chat naquele projeto."""
-    return claude_sessions.pop((chat_id, cwd), None) is not None
+    removida = claude_sessions.pop((chat_id, cwd), None) is not None
+    if removida:
+        _salvar_sessoes()
+    return removida
 
 # Logger com rotação
 LOG_FILE_CLAUDE = os.path.join(BOT_REPO_DIR, f"claude-{BOT_NOME}.log")
@@ -267,15 +362,19 @@ def _matar_processo(proc):
 
 
 def _extrair_resultado(eventos):
-    """Do stream de eventos, tira (texto, session_id, thinking, tools)."""
+    """Do stream de eventos, tira (texto, session_id, thinking, tools, info)."""
     texto_resposta = ""
     novo_session_id = None
     thinking, tools_usadas = [], []
+    info = {"is_error": False, "erros": []}
     for item in eventos:
         if not isinstance(item, dict):
             continue
         if item.get("type") == "result":
             texto_resposta = item.get("result") or item.get("text") or ""
+            info["is_error"] = bool(item.get("is_error"))
+            if isinstance(item.get("errors"), list):
+                info["erros"] = [str(e) for e in item["errors"] if e]
         if item.get("session_id"):
             novo_session_id = item.get("session_id")
         if item.get("type") == "assistant":
@@ -290,7 +389,7 @@ def _extrair_resultado(eventos):
                     nome = _nome_tool(bloco.get("name", "?"))
                     detalhe = _detalhe_tool(bloco.get("input"))
                     tools_usadas.append(f"{nome}: {detalhe}" if detalhe else nome)
-    return texto_resposta, novo_session_id, thinking, tools_usadas
+    return texto_resposta, novo_session_id, thinking, tools_usadas, info
 
 
 def rodar_claude(prompt, cwd, session_id=None, on_evento=None):
@@ -380,9 +479,20 @@ def rodar_claude(prompt, cwd, session_id=None, on_evento=None):
 
     res["_raw"] = res["stdout"]
 
-    texto_resposta, novo_session_id, thinking, tools_usadas = _extrair_resultado(eventos)
+    texto_resposta, novo_session_id, thinking, tools_usadas, info = _extrair_resultado(eventos)
+
+    # A sessão pode ter sumido (limpeza do CLI, ~/.claude apagado). O CLI sinaliza
+    # isso no evento result e ainda sai com código 0 — sem tratar, o chat ficaria
+    # travado até um /limpar_conversa. Recomeça limpo, uma vez só.
+    if session_id and any("No conversation found" in e for e in info["erros"]):
+        _claude_logger.info(f"⚠️ Sessão {session_id} não existe mais — recomeçando limpa.")
+        return rodar_claude(prompt, cwd, session_id=None, on_evento=on_evento)
+
+    res["is_error"] = info["is_error"]
     if not texto_resposta:
         texto_resposta = res["stdout"]
+    if not texto_resposta and info["erros"]:
+        texto_resposta = "⚠️ " + "\n".join(info["erros"])
 
     if thinking:
         _claude_logger.info(f"🧠 Thinking:\n{'---\n'.join(thinking)}")
@@ -426,6 +536,7 @@ async def rodar_claude_completo(msg, chat_id, prompt):
         logar_prompt(label, cwd, f"{log_prefix}{prompt}")
 
         hash_antes = git_remote_hash(cwd)
+        _registrar_execucao(cwd, chat_id, label, prompt)
 
         # O Claude roda numa thread; os eventos atravessam para o loop via fila,
         # e uma task separada vai editando a mensagem de status.
@@ -438,13 +549,14 @@ async def rodar_claude_completo(msg, chat_id, prompt):
                 lambda evento: loop.call_soon_threadsafe(fila.put_nowait, evento),
             )
         finally:
+            _encerrar_execucao(cwd)
             transmissor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await transmissor
 
         if res.get("cancelado"):
             icone = "🛑"
-        elif res["code"] not in (0, None):
+        elif res["code"] not in (0, None) or res.get("is_error"):
             icone = "⚠️"
         else:
             icone = "✅"
@@ -453,6 +565,7 @@ async def rodar_claude_completo(msg, chat_id, prompt):
 
         if novo_session_id:
             claude_sessions[chave] = novo_session_id
+            _salvar_sessoes()
         # Quando o processo é morto (timeout ou /cancelar), preservamos o session_id
         # atual para que a próxima mensagem retome a conversa. Use /limpar_conversa para começar
         # uma sessão limpa.
@@ -473,3 +586,7 @@ async def rodar_claude_completo(msg, chat_id, prompt):
 async def enviar_para_claude(update, prompt: str):
     """Handler unificado do Claude."""
     await rodar_claude_completo(update.message, update.effective_chat.id, prompt)
+
+
+# Restaura as sessões salvas: o bot pode reiniciar (ou o PC), a conversa continua.
+claude_sessions.update(_carregar_sessoes())
