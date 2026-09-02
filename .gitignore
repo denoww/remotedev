@@ -11,3 +11,4 @@ bots/*.conf
 *.log
 .estado-*.json
 .modelo-*.json
+.users-*.json

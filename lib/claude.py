@@ -94,9 +94,13 @@ def rodar_claude(prompt, cwd, session_id=None):
     """Roda o Claude via stdin e retorna (res, texto_resposta, session_id)."""
     system_prompt = (
         "Nunca use tabelas Markdown (sintaxe `| col |`). "
-        "Use listas com `-` ou texto corrido no lugar de tabelas."
+        "Use listas com `-` ou texto corrido no lugar de tabelas.\n"
+        "O Chrome desta máquina é o navegador real do usuário, com as sessões já logadas. "
+        "Para qualquer site que exija login, use as ferramentas de browser (claude-in-chrome) "
+        "em vez de WebFetch. Abra abas novas; não feche as abas do usuário."
     )
-    flags = ['--dangerously-skip-permissions', '--output-format', 'json', '--verbose',
+    flags = ['--dangerously-skip-permissions', '--chrome',
+             '--output-format', 'json', '--verbose',
              '--system-prompt', system_prompt]
     modelo = carregar_modelo()
     if modelo:
