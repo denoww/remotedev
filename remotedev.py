@@ -48,6 +48,7 @@ from lib.claude import (
     CLAUDE_LOCK_FILE, MODELOS_VALIDOS,
     enviar_para_claude, rodar_claude_completo,
     carregar_modelo, salvar_modelo,
+    claude_em_execucao, bots_com_claude_rodando, limpar_sessao,
 )
 from lib.git_ops import (
     cmd_diff, cmd_push, cmd_gitbranch, cmd_gitpull, cmd_gitreset,
@@ -266,9 +267,10 @@ async def cmd_bash(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await exigir_projeto(update):
         return
-    cwd = projeto_path(update.effective_chat.id)
-    label = projeto_label(update.effective_chat.id)
-    claude_sessions.pop(cwd, None)
+    chat_id = update.effective_chat.id
+    cwd = projeto_path(chat_id)
+    label = projeto_label(chat_id)
+    limpar_sessao(chat_id, cwd)
     await update.message.reply_text(f"✅ Nova sessão iniciada! [{label}]")
 
 
@@ -403,10 +405,67 @@ async def callback_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"🤖 Modelo definido: <b>{escolha}</b>", parse_mode="HTML")
 
 
+def _resumo_claude_rodando():
+    """Projetos deste bot com Claude vivo agora, formatado. None se não há nenhum."""
+    ativos = claude_em_execucao()
+    if not ativos:
+        return None
+    return "\n".join(
+        f"- {os.path.basename(cwd)} (há {seg // 60}min)" for cwd, seg in ativos
+    )
+
+
+def _resumo_claude_maquina():
+    """Igual ao anterior, mais os outros bots da máquina (via lock files)."""
+    partes = []
+    resumo = _resumo_claude_rodando()
+    if resumo:
+        partes.append(f"Neste bot ({BOT_NOME}):\n{resumo}")
+    outros = [n for n in bots_com_claude_rodando() if n != BOT_NOME]
+    if outros:
+        partes.append("Outros bots executando: " + ", ".join(outros))
+    return "\n\n".join(partes) if partes else None
+
+
+async def _confirmar_restart(update, resumo, callback_data):
+    teclado = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Reiniciar assim mesmo", callback_data=callback_data),
+            InlineKeyboardButton("❌ Cancelar", callback_data="rst:nao"),
+        ]
+    ])
+    await update.message.reply_text(
+        f"⚠️ <b>Claude está rodando agora:</b>\n{resumo}\n\n"
+        "Reiniciar vai matar essa execução no meio.",
+        parse_mode="HTML",
+        reply_markup=teclado,
+    )
+
+
+async def _disparar_restart_bot(responder):
+    await responder(f"🔄 Atualizando e reiniciando {BOT_NOME}...")
+    subprocess.Popen(f"sleep 2 && cd {BOT_REPO_DIR} && git pull && systemctl --user restart {BOT_SERVICE}", shell=True)
+
+
 @autorizado
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🔄 Atualizando e reiniciando {BOT_NOME}...")
-    subprocess.Popen(f"sleep 2 && cd {BOT_REPO_DIR} && git pull && systemctl --user restart {BOT_SERVICE}", shell=True)
+    resumo = _resumo_claude_rodando()
+    if resumo:
+        await _confirmar_restart(update, resumo, "rst:bot")
+        return
+    await _disparar_restart_bot(update.message.reply_text)
+
+
+@autorizado
+async def callback_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "rst:bot":
+        await _disparar_restart_bot(query.edit_message_text)
+    elif query.data == "rst:todos":
+        await _disparar_restart_todos(query.edit_message_text)
+    else:
+        await query.edit_message_text("❌ Restart cancelado.")
 
 
 @apenas_owner
@@ -438,8 +497,7 @@ async def callback_reboot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Reinicialização cancelada.")
 
 
-@autorizado
-async def cmd_restart_todos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _disparar_restart_todos(responder):
     try:
         res = subprocess.run(
             ["systemctl", "--user", "list-units", "remotedev-*", "--no-legend", "--plain"],
@@ -455,9 +513,18 @@ async def cmd_restart_todos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         services.remove(BOT_SERVICE)
         services.append(BOT_SERVICE)
     nomes = ", ".join(s.replace("remotedev-", "").replace(".service", "") for s in services)
-    await update.message.reply_text(f"🔄 Atualizando e reiniciando todos: {nomes}...")
+    await responder(f"🔄 Atualizando e reiniciando todos: {nomes}...")
     restart_cmd = " && ".join(f"systemctl --user restart {s}" for s in services)
     subprocess.Popen(f"sleep 2 && cd {BOT_REPO_DIR} && git pull && {restart_cmd}", shell=True)
+
+
+@autorizado
+async def cmd_restart_todos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    resumo = _resumo_claude_maquina()
+    if resumo:
+        await _confirmar_restart(update, resumo, "rst:todos")
+        return
+    await _disparar_restart_todos(update.message.reply_text)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -795,6 +862,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_reboot, pattern=r"^reboot:"))
     app.add_handler(CommandHandler("restart_bot", cmd_restart))
     app.add_handler(CommandHandler("restart_todos", cmd_restart_todos))
+    app.add_handler(CallbackQueryHandler(callback_restart, pattern=r"^rst:"))
     app.add_handler(CommandHandler("users", autorizado(cmd_users)))
     app.add_handler(CallbackQueryHandler(callback_users, pattern=r"^users:"))
 

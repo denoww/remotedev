@@ -1,4 +1,6 @@
 import os
+import time
+import glob
 import subprocess
 import asyncio
 import json as json_mod
@@ -11,13 +13,16 @@ from lib.utils import rodar, projeto_path, projeto_label
 from lib.hooks import git_remote_hash, detectar_eventos, executar_hooks
 
 # Estado
-claude_sessions = {}  # cwd → session_id
+claude_sessions = {}  # (chat_id, cwd) → session_id
 claude_processos = {}  # cwd → subprocess.Popen
+claude_inicio = {}  # cwd → epoch do início da execução
 claude_locks = {}  # cwd → asyncio.Lock
 claude_cancelado = set()  # cwds com stop ativo
 
-# Lock file para sinalizar que Claude está rodando (evita restart durante execução)
+# Lock file por bot: sinaliza que há Claude rodando. Serve para os outros bots
+# da máquina detectarem execução em andamento antes de um /restart_todos.
 CLAUDE_LOCK_FILE = f"/tmp/remotedev-claude-{BOT_NOME}.lock"
+CLAUDE_LOCK_GLOB = "/tmp/remotedev-claude-*.lock"
 
 # Arquivo com o modelo escolhido (global por bot). Ausente = padrão do CLI.
 MODELO_FILE = os.path.join(BOT_REPO_DIR, f".modelo-{BOT_NOME}.json")
@@ -59,11 +64,38 @@ def _criar_lock():
 
 
 def _remover_lock():
-    """Remove lock file após execução do Claude."""
+    """Remove o lock file, desde que nenhum outro projeto ainda esteja rodando."""
+    if any(p and p.poll() is None for p in claude_processos.values()):
+        return
     try:
         os.remove(CLAUDE_LOCK_FILE)
     except OSError:
         pass
+
+
+def claude_em_execucao():
+    """Projetos deste bot com Claude vivo agora: [(cwd, segundos_rodando)]."""
+    agora = time.time()
+    ativos = []
+    for cwd, proc in list(claude_processos.items()):
+        if proc and proc.poll() is None:
+            ativos.append((cwd, int(agora - claude_inicio.get(cwd, agora))))
+    return ativos
+
+
+def bots_com_claude_rodando():
+    """Nomes dos bots da máquina com Claude rodando, lidos dos lock files."""
+    nomes = []
+    for caminho in sorted(glob.glob(CLAUDE_LOCK_GLOB)):
+        nome = os.path.basename(caminho)[len("remotedev-claude-"):-len(".lock")]
+        if nome:
+            nomes.append(nome)
+    return nomes
+
+
+def limpar_sessao(chat_id, cwd):
+    """Descarta a sessão do Claude daquele chat naquele projeto."""
+    return claude_sessions.pop((chat_id, cwd), None) is not None
 
 # Logger com rotação
 LOG_FILE_CLAUDE = os.path.join(BOT_REPO_DIR, f"claude-{BOT_NOME}.log")
@@ -117,6 +149,7 @@ def rodar_claude(prompt, cwd, session_id=None):
             start_new_session=True,
         )
         claude_processos[cwd] = proc
+        claude_inicio[cwd] = time.time()
         try:
             stdout, stderr = proc.communicate(input=prompt, timeout=CLAUDE_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -124,6 +157,7 @@ def rodar_claude(prompt, cwd, session_id=None):
             stdout, stderr = proc.communicate()
         finally:
             claude_processos.pop(cwd, None)
+            claude_inicio.pop(cwd, None)
             _remover_lock()
 
         stdout = stdout.strip()
@@ -131,10 +165,12 @@ def rodar_claude(prompt, cwd, session_id=None):
         res = {"stdout": stdout, "stderr": stderr, "code": proc.returncode, "truncated": False}
 
         if proc.returncode and proc.returncode < 0:
+            res["cancelado"] = True
             return res, "🛑 Comando cancelado.", None
 
     except Exception as e:
         claude_processos.pop(cwd, None)
+        claude_inicio.pop(cwd, None)
         _remover_lock()
         res = {"stdout": "", "stderr": str(e), "code": -1, "truncated": False}
 
@@ -209,7 +245,8 @@ async def rodar_claude_completo(msg, chat_id, prompt):
             claude_cancelado.discard(cwd)
             return
 
-        session_id = claude_sessions.get(cwd)
+        chave = (chat_id, cwd)
+        session_id = claude_sessions.get(chave)
 
         await msg.reply_text(f"⏳ {label}...")
 
@@ -220,7 +257,7 @@ async def rodar_claude_completo(msg, chat_id, prompt):
         res, texto_resposta, novo_session_id = await asyncio.to_thread(rodar_claude, prompt, cwd, session_id)
 
         if novo_session_id:
-            claude_sessions[cwd] = novo_session_id
+            claude_sessions[chave] = novo_session_id
         # Quando o processo é morto (timeout ou /cancelar), preservamos o session_id
         # atual para que a próxima mensagem retome a conversa. Use /limpar_conversa para começar
         # uma sessão limpa.
@@ -228,6 +265,8 @@ async def rodar_claude_completo(msg, chat_id, prompt):
         logar_claude(label, cwd, f"{log_prefix}{prompt}", res, texto_resposta)
 
         texto = texto_resposta or "(sem resposta)"
+        if not res.get("cancelado") and res["code"] not in (0, None) and res["stderr"]:
+            texto += f"\n\n⚠️ Erro do Claude (exit {res['code']}):\n{res['stderr'][-1500:]}"
         pedacos = [texto[i:i + TELEGRAM_MSG_LIMIT] for i in range(0, len(texto), TELEGRAM_MSG_LIMIT)]
         for pedaco in pedacos:
             await msg.reply_text(pedaco)
