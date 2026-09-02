@@ -1,6 +1,8 @@
 import os
 import time
 import glob
+import threading
+import contextlib
 import subprocess
 import asyncio
 import json as json_mod
@@ -29,6 +31,11 @@ MODELO_FILE = os.path.join(BOT_REPO_DIR, f".modelo-{BOT_NOME}.json")
 
 # Modelos aceitos pelo --model do claude CLI (aliases)
 MODELOS_VALIDOS = ("opus", "sonnet", "haiku")
+
+# Progresso no Telegram: mínimo entre edições quando há novidade, e batida do
+# cronômetro mesmo sem novidade. Segura o volume de edições numa tarefa longa.
+INTERVALO_PROGRESSO = 3
+HEARTBEAT_PROGRESSO = 30
 
 
 def carregar_modelo() -> str | None:
@@ -122,8 +129,177 @@ def logar_claude(label, cwd, prompt, res, texto_resposta):
         _claude_logger.info(f"Erro:\n{res['stderr']}")
 
 
-def rodar_claude(prompt, cwd, session_id=None):
-    """Roda o Claude via stdin e retorna (res, texto_resposta, session_id)."""
+# ── Progresso ────────────────────────────────────────────────────────────
+
+# Campos de input de ferramenta que valem como descrição no progresso
+_CAMPOS_DETALHE = ("command", "pattern", "file_path", "url", "query",
+                   "description", "prompt", "text")
+
+# Ferramentas de bastidor: o input não diz nada ao usuário, melhor traduzir
+_TOOLS_AMIGAVEIS = {
+    "ToolSearch": "preparando ferramentas…",
+    "TodoWrite": "organizando o plano…",
+}
+
+
+def _nome_tool(nome):
+    """mcp__claude-in-chrome__navigate → chrome/navigate."""
+    if nome.startswith("mcp__"):
+        partes = nome.split("__")
+        if len(partes) >= 3:
+            servidor = partes[1].replace("claude-in-chrome", "chrome")
+            return f"{servidor}/{partes[2]}"
+    return nome
+
+
+def _detalhe_tool(entrada, limite=90):
+    """Primeira linha do campo mais informativo do input da ferramenta."""
+    if not isinstance(entrada, dict):
+        return ""
+    for campo in _CAMPOS_DETALHE:
+        valor = entrada.get(campo)
+        if isinstance(valor, str) and valor.strip():
+            primeira = valor.strip().splitlines()[0]
+            return primeira[:limite] + ("…" if len(primeira) > limite else "")
+    return ""
+
+
+def _duracao(segundos):
+    segundos = int(segundos)
+    if segundos < 60:
+        return f"{segundos}s"
+    if segundos < 3600:
+        return f"{segundos // 60}m{segundos % 60:02d}s"
+    return f"{segundos // 3600}h{(segundos % 3600) // 60:02d}m"
+
+
+class Progresso:
+    """Acumula os eventos do stream-json e renderiza o status para o Telegram."""
+
+    def __init__(self, label):
+        self.label = label
+        self.inicio = time.monotonic()
+        self.tools = 0
+        self.atual = ""
+
+    def aplicar(self, evento):
+        if evento.get("type") != "assistant":
+            return
+        for bloco in evento.get("message", {}).get("content", []):
+            if not isinstance(bloco, dict):
+                continue
+            tipo = bloco.get("type")
+            if tipo == "thinking":
+                self.atual = "💭 pensando…"
+            elif tipo == "text" and bloco.get("text", "").strip():
+                self.atual = "✍️ escrevendo a resposta…"
+            elif tipo == "tool_use":
+                self.tools += 1
+                bruto = bloco.get("name", "?")
+                if bruto in _TOOLS_AMIGAVEIS:
+                    self.atual = f"🔧 {_TOOLS_AMIGAVEIS[bruto]}"
+                    continue
+                nome = _nome_tool(bruto)
+                detalhe = _detalhe_tool(bloco.get("input"))
+                self.atual = f"🔧 {nome}" + (f": {detalhe}" if detalhe else "")
+
+    def assinatura(self):
+        """O que, mudando, justifica uma edição imediata da mensagem."""
+        return (self.atual, self.tools)
+
+    def render(self, final=False, icone=None):
+        marca = icone or ("✅" if final else "⏳")
+        linha = f"{marca} {self.label} · {_duracao(time.monotonic() - self.inicio)}"
+        if self.tools:
+            linha += f" · {self.tools} ação(ões)"
+        if final or not self.atual:
+            return linha
+        return f"{linha}\n{self.atual}"
+
+
+async def _transmitir_progresso(status, fila, prog):
+    """Edita a mensagem de status enquanto os eventos do Claude chegam."""
+    assinatura = prog.assinatura()
+    ultima_edicao = time.monotonic()
+    while True:
+        try:
+            prog.aplicar(await asyncio.wait_for(fila.get(), timeout=1))
+            while not fila.empty():
+                prog.aplicar(fila.get_nowait())
+        except asyncio.TimeoutError:
+            pass
+
+        agora = time.monotonic()
+        desde_edicao = agora - ultima_edicao
+        novidade = prog.assinatura() != assinatura
+        if not (novidade and desde_edicao >= INTERVALO_PROGRESSO) and desde_edicao < HEARTBEAT_PROGRESSO:
+            continue
+
+        # 429, "message is not modified", mensagem apagada — nada disso pode
+        # derrubar a execução do Claude, que segue em outra thread.
+        with contextlib.suppress(Exception):
+            await status.edit_text(prog.render())
+        assinatura = prog.assinatura()
+        ultima_edicao = agora
+
+
+def quebrar_para_telegram(texto, limite=TELEGRAM_MSG_LIMIT):
+    """Divide em mensagens preferindo quebra de linha, depois espaço."""
+    pedacos, resto = [], texto
+    while len(resto) > limite:
+        corte = resto.rfind("\n", 0, limite)
+        if corte < limite // 2:
+            corte = resto.rfind(" ", 0, limite)
+        if corte < limite // 2:
+            corte = limite
+        pedacos.append(resto[:corte].rstrip())
+        resto = resto[corte:].lstrip("\n")
+    if resto.strip():
+        pedacos.append(resto)
+    return pedacos or [texto]
+
+
+# ── Execução ─────────────────────────────────────────────────────────────
+
+def _matar_processo(proc):
+    with contextlib.suppress(OSError):
+        os.killpg(os.getpgid(proc.pid), 9)
+
+
+def _extrair_resultado(eventos):
+    """Do stream de eventos, tira (texto, session_id, thinking, tools)."""
+    texto_resposta = ""
+    novo_session_id = None
+    thinking, tools_usadas = [], []
+    for item in eventos:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "result":
+            texto_resposta = item.get("result") or item.get("text") or ""
+        if item.get("session_id"):
+            novo_session_id = item.get("session_id")
+        if item.get("type") == "assistant":
+            for bloco in item.get("message", {}).get("content", []):
+                if not isinstance(bloco, dict):
+                    continue
+                if bloco.get("type") == "thinking":
+                    t = bloco.get("thinking", "").strip()
+                    if t:
+                        thinking.append(t)
+                elif bloco.get("type") == "tool_use":
+                    nome = _nome_tool(bloco.get("name", "?"))
+                    detalhe = _detalhe_tool(bloco.get("input"))
+                    tools_usadas.append(f"{nome}: {detalhe}" if detalhe else nome)
+    return texto_resposta, novo_session_id, thinking, tools_usadas
+
+
+def rodar_claude(prompt, cwd, session_id=None, on_evento=None):
+    """Roda o Claude via stdin e retorna (res, texto_resposta, session_id).
+
+    A saída é lida em stream (`--output-format stream-json`): cada evento vai
+    para `on_evento` assim que chega, o que permite mostrar progresso ao vivo.
+    Sem `on_evento` o comportamento é o de sempre — bloqueia até o fim.
+    """
     system_prompt = (
         "Nunca use tabelas Markdown (sintaxe `| col |`). "
         "Use listas com `-` ou texto corrido no lugar de tabelas.\n"
@@ -132,7 +308,7 @@ def rodar_claude(prompt, cwd, session_id=None):
         "em vez de WebFetch. Abra abas novas; não feche as abas do usuário."
     )
     flags = ['--dangerously-skip-permissions', '--chrome',
-             '--output-format', 'json', '--verbose',
+             '--output-format', 'stream-json', '--verbose',
              '--system-prompt', system_prompt]
     modelo = carregar_modelo()
     if modelo:
@@ -141,31 +317,59 @@ def rodar_claude(prompt, cwd, session_id=None):
     if session_id:
         cmd_args += ['--resume', session_id]
 
+    eventos, linhas_cruas, stderr_partes = [], [], []
+
     try:
         _criar_lock()
         proc = subprocess.Popen(
             cmd_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=cwd, text=True, env={**os.environ, "TERM": "dumb"},
+            cwd=cwd, text=True, bufsize=1, env={**os.environ, "TERM": "dumb"},
             start_new_session=True,
         )
         claude_processos[cwd] = proc
         claude_inicio[cwd] = time.time()
+
+        # stderr em thread própria: se o pipe enchesse, o Claude travaria
+        t_err = threading.Thread(target=lambda: stderr_partes.append(proc.stderr.read() or ""), daemon=True)
+        t_err.start()
+
+        # como a leitura agora é incremental, o timeout vira um watchdog
+        matador = threading.Timer(CLAUDE_TIMEOUT, _matar_processo, args=(proc,))
+        matador.daemon = True
+        matador.start()
+
         try:
-            stdout, stderr = proc.communicate(input=prompt, timeout=CLAUDE_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(proc.pid), 9)
-            stdout, stderr = proc.communicate()
+            with contextlib.suppress(BrokenPipeError, OSError):
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            for linha in iter(proc.stdout.readline, ''):
+                linha = linha.strip()
+                if not linha:
+                    continue
+                try:
+                    evento = json_mod.loads(linha)
+                except json_mod.JSONDecodeError:
+                    linhas_cruas.append(linha)
+                    continue
+                eventos.append(evento)
+                if on_evento:
+                    with contextlib.suppress(Exception):
+                        on_evento(evento)
         finally:
+            matador.cancel()
+            proc.wait()
+            t_err.join(timeout=5)
             claude_processos.pop(cwd, None)
             claude_inicio.pop(cwd, None)
             _remover_lock()
 
-        stdout = stdout.strip()
-        stderr = stderr.strip()
-        res = {"stdout": stdout, "stderr": stderr, "code": proc.returncode, "truncated": False}
+        res = {"stdout": "\n".join(linhas_cruas).strip(),
+               "stderr": "".join(stderr_partes).strip(),
+               "code": proc.returncode, "truncated": False}
 
         if proc.returncode and proc.returncode < 0:
             res["cancelado"] = True
+            res["_raw"] = res["stdout"]
             return res, "🛑 Comando cancelado.", None
 
     except Exception as e:
@@ -176,43 +380,10 @@ def rodar_claude(prompt, cwd, session_id=None):
 
     res["_raw"] = res["stdout"]
 
-    texto_resposta = ""
-    novo_session_id = None
-    thinking = []
-    tools_usadas = []
-    try:
-        data = json_mod.loads(res["stdout"])
-        if isinstance(data, dict):
-            texto_resposta = data.get("result") or data.get("text") or ""
-            novo_session_id = data.get("session_id")
-        elif isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    if item.get("type") == "result":
-                        texto_resposta = item.get("result") or item.get("text") or ""
-                    if item.get("session_id"):
-                        novo_session_id = item.get("session_id")
-                    # Extrair thinking e tools do verbose
-                    if item.get("type") == "assistant":
-                        msg = item.get("message", {})
-                        for block in msg.get("content", []):
-                            if isinstance(block, dict):
-                                if block.get("type") == "thinking":
-                                    t = block.get("thinking", "").strip()
-                                    if t:
-                                        thinking.append(t)
-                                elif block.get("type") == "tool_use":
-                                    name = block.get("name", "?")
-                                    inp = block.get("input", {})
-                                    if isinstance(inp, dict):
-                                        detalhe = inp.get("command") or inp.get("pattern") or inp.get("file_path") or ""
-                                        tools_usadas.append(f"{name}: {detalhe}" if detalhe else name)
-                                    else:
-                                        tools_usadas.append(name)
-    except (json_mod.JSONDecodeError, TypeError, KeyError):
+    texto_resposta, novo_session_id, thinking, tools_usadas = _extrair_resultado(eventos)
+    if not texto_resposta:
         texto_resposta = res["stdout"]
 
-    # Salvar thinking e tools no log
     if thinking:
         _claude_logger.info(f"🧠 Thinking:\n{'---\n'.join(thinking)}")
     if tools_usadas:
@@ -248,13 +419,37 @@ async def rodar_claude_completo(msg, chat_id, prompt):
         chave = (chat_id, cwd)
         session_id = claude_sessions.get(chave)
 
-        await msg.reply_text(f"⏳ {label}...")
+        prog = Progresso(label)
+        status = await msg.reply_text(prog.render())
 
         log_prefix = "(continuação) " if session_id else ""
         logar_prompt(label, cwd, f"{log_prefix}{prompt}")
 
         hash_antes = git_remote_hash(cwd)
-        res, texto_resposta, novo_session_id = await asyncio.to_thread(rodar_claude, prompt, cwd, session_id)
+
+        # O Claude roda numa thread; os eventos atravessam para o loop via fila,
+        # e uma task separada vai editando a mensagem de status.
+        fila = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        transmissor = asyncio.create_task(_transmitir_progresso(status, fila, prog))
+        try:
+            res, texto_resposta, novo_session_id = await asyncio.to_thread(
+                rodar_claude, prompt, cwd, session_id,
+                lambda evento: loop.call_soon_threadsafe(fila.put_nowait, evento),
+            )
+        finally:
+            transmissor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await transmissor
+
+        if res.get("cancelado"):
+            icone = "🛑"
+        elif res["code"] not in (0, None):
+            icone = "⚠️"
+        else:
+            icone = "✅"
+        with contextlib.suppress(Exception):
+            await status.edit_text(prog.render(final=True, icone=icone))
 
         if novo_session_id:
             claude_sessions[chave] = novo_session_id
@@ -267,8 +462,7 @@ async def rodar_claude_completo(msg, chat_id, prompt):
         texto = texto_resposta or "(sem resposta)"
         if not res.get("cancelado") and res["code"] not in (0, None) and res["stderr"]:
             texto += f"\n\n⚠️ Erro do Claude (exit {res['code']}):\n{res['stderr'][-1500:]}"
-        pedacos = [texto[i:i + TELEGRAM_MSG_LIMIT] for i in range(0, len(texto), TELEGRAM_MSG_LIMIT)]
-        for pedaco in pedacos:
+        for pedaco in quebrar_para_telegram(texto):
             await msg.reply_text(pedaco)
         eventos = detectar_eventos(cwd, hash_antes)
         hooks_msgs = executar_hooks(cwd, eventos)
