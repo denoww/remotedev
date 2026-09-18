@@ -281,7 +281,8 @@ except (KeyboardInterrupt, SystemExit):
     # OpenAI API Key (opcional, para transcrição de áudio)
     echo ""
     echo "  🎤 OpenAI API Key (para transcrever áudios do Telegram)"
-    echo "     Sem ela, áudios não serão interpretados."
+    echo "     Sem ela — ou sem créditos na conta — o bot cai automaticamente"
+    echo "     no AWS Transcribe, se houver credencial AWS em ~/.aws/credentials."
     echo ""
     read -p "  Cole a OPENAI_API_KEY (ou Enter para pular): " OPENAI_KEY
 
@@ -294,7 +295,11 @@ except (KeyboardInterrupt, SystemExit):
         if [ -n "$OPENAI_KEY" ]; then
             echo "  ℹ️  Usando OPENAI_API_KEY já configurada."
         else
-            echo "  ⏭️  Pulado."
+            if [ -f "$HOME/.aws/credentials" ]; then
+                echo "  ⏭️  Pulado — áudios vão usar o AWS Transcribe (fallback)."
+            else
+                echo "  ⏭️  Pulado — sem OpenAI e sem credencial AWS, áudios não serão transcritos."
+            fi
         fi
     fi
 

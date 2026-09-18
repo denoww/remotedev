@@ -58,6 +58,7 @@ from lib.git_ops import (
     _enviar_diff, _gerar_commit_ia, git_push,
 )
 from lib.hooks import pos_push
+from lib.transcricao import transcrever, provedor_disponivel
 from lib.ngrok import cmd_ngrok
 from lib.novo_projeto import (
     callback_novo_projeto, callback_uso_projeto, callback_github_novo, criar_projeto, validar_nome_projeto,
@@ -597,14 +598,9 @@ async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def transcrever_audio(file_path: str) -> str:
-    from openai import OpenAI
-    client = OpenAI()
-    with open(file_path, "rb") as audio_file:
-        transcription = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",
-            file=audio_file,
-        )
-    return transcription.text
+    """Transcreve com OpenAI e, se faltar crédito/chave, cai para AWS Transcribe."""
+    texto, _provedor = await transcrever(file_path)
+    return texto
 
 
 @autorizado
@@ -613,9 +609,12 @@ async def mensagem_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not voice:
         return
 
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    if not openai_key:
-        await update.message.reply_text("⚠️ OPENAI_API_KEY não configurada.\nRode ./bot.sh install para configurar.")
+    if not provedor_disponivel():
+        await update.message.reply_text(
+            "⚠️ Nenhum provedor de transcrição configurado.\n"
+            "Rode ./bot.sh install para a OPENAI_API_KEY, ou configure credenciais AWS "
+            "(~/.aws/credentials) para usar o AWS Transcribe."
+        )
         return
 
     await update.message.reply_text("🎤 Transcrevendo áudio...")
@@ -627,7 +626,7 @@ async def mensagem_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tmp_path = tmp.name
             await file.download_to_drive(tmp_path)
 
-        texto = await transcrever_audio(tmp_path)
+        texto, provedor = await transcrever(tmp_path)
         os.unlink(tmp_path)
         tmp_path = None
 
@@ -635,7 +634,9 @@ async def mensagem_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Não consegui transcrever o áudio.")
             return
 
-        await update.message.reply_text(f"📝 {texto}")
+        # Sem parse_mode: a transcrição é texto livre e pode conter * _ ` que quebrariam o envio.
+        selo = "\n\n🔁 via AWS Transcribe (fallback)" if provedor == "aws" else ""
+        await update.message.reply_text(f"📝 {texto}{selo}")
 
         chat_id = update.effective_chat.id
         if projeto_config(chat_id) is None:
@@ -719,9 +720,8 @@ async def mensagem_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paths_str = ", ".join(frames)
             partes_prompt.append(f"Frames do vídeo: {paths_str}")
 
-        # Extrair e transcrever áudio (se tiver OpenAI key)
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        if openai_key:
+        # Extrair e transcrever áudio (OpenAI ou, sem crédito/chave, AWS Transcribe)
+        if provedor_disponivel():
             audio_path = os.path.join(tmp_dir, "audio.ogg")
             result = subprocess.run(
                 ["ffmpeg", "-i", video_path, "-vn", "-acodec", "libopus", audio_path],
@@ -733,8 +733,8 @@ async def mensagem_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if transcricao and transcricao.strip():
                         partes_prompt.append(f"Áudio do vídeo: {transcricao}")
                         await update.message.reply_text(f"📝 Áudio: {transcricao}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[video] transcrição do áudio falhou: {e}")
 
         if not partes_prompt:
             await update.message.reply_text("⚠️ Não consegui extrair conteúdo do vídeo.")

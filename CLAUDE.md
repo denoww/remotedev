@@ -14,6 +14,7 @@ Bot Telegram para controle remoto de projetos no desktop. Permite executar coman
 - `lib/media_groups.py` — Agrupa anexos do mesmo álbum do Telegram num único prompt
 - `lib/ngrok.py` — Comando /ngrok: detecta a porta do projeto e gerencia túneis
 - `lib/users.py` — Gerenciamento de usuários autorizados (persistência JSON, handlers, helpers)
+- `lib/transcricao.py` — Transcrição de áudio (OpenAI e, no fallback, AWS Transcribe)
 - `lib/utils.py` — Utilitários (estado, autorização, execução de comandos)
 - `bot.sh` — Script de gerenciamento (install/uninstall/restart/logs)
 

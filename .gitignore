@@ -14,3 +14,4 @@ bots/*.conf
 .users-*.json
 .sessoes-*.json
 .execucao-*.json
+*.log.*

@@ -20,6 +20,14 @@ Simples e fácil:
 ```
 
 
+## Áudio e vídeo
+
+Áudio enviado no Telegram é transcrito e vira prompt pro Claude. A transcrição tenta
+primeiro a **OpenAI** (`OPENAI_API_KEY`) e, se ela falhar — tipicamente conta sem
+créditos —, cai sozinha no **AWS Transcribe**, usando a credencial de `~/.aws/credentials`
+(bucket `sc-transcricoes-temp`, pt-BR). Quando o fallback entra, a resposta vem marcada
+com "via AWS Transcribe". Sem nenhum dos dois, o bot avisa em vez de falhar calado.
+
 ## Comandos disponíveis no Telegram
 
 Vá no Telegram e digite `/menu` ou `/` para ver os comandos. Eles são registrados automaticamente ao iniciar o bot.
