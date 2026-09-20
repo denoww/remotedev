@@ -66,6 +66,10 @@ from lib.novo_projeto import (
 )
 from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exclusao, callback_excluir
 from lib.media_groups import adicionar_ao_grupo_ou_processar
+from lib.sessoes import (
+    sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, ha_quanto,
+    enviar_mensagem_peer,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -280,6 +284,10 @@ async def cmd_new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @autorizado
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    if chat_id in resposta_pendente:
+        del resposta_pendente[chat_id]
+        await update.message.reply_text("Envio pra sessão externa cancelado.")
+        return
     if chat_id in user_pendente:
         del user_pendente[chat_id]
         await update.message.reply_text("Gestão de usuários cancelada.")
@@ -554,6 +562,145 @@ async def cmd_restart_todos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# COMANDOS — SESSÕES EXTERNAS (terminal, fora do bot)
+# ══════════════════════════════════════════════════════════════════════
+
+def _texto_lista_sessoes(sessoes):
+    linhas = [f"{rotulo_status(s.get('status'))} · <b>{html.escape(s.get('name') or '?')}</b> · há {ha_quanto(s)}"
+              for s in sessoes]
+    return f"🖥️ <b>{len(sessoes)} sessão(ões) ativa(s)</b> em ~/workspace:\n\n" + "\n".join(linhas)
+
+
+def _teclado_lista_sessoes(sessoes):
+    teclado = [
+        [InlineKeyboardButton(f"{rotulo_status(s.get('status')).split()[0]} {(s.get('name') or '?')[:28]}",
+                               callback_data=f"sessext:{i}")]
+        for i, s in enumerate(sessoes)
+    ]
+    teclado.append([InlineKeyboardButton("🔄 Atualizar", callback_data="sessext_atualizar")])
+    return InlineKeyboardMarkup(teclado)
+
+
+@autorizado
+async def cmd_sessoes_listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    aguarde = await update.message.reply_text("🔎 Procurando sessões Claude ativas na máquina...")
+    sessoes = await asyncio.to_thread(coletar)
+    sessoes_cache[chat_id] = sessoes
+    if not sessoes:
+        await aguarde.edit_text("Nenhuma sessão Claude ativa encontrada em ~/workspace agora.")
+        return
+    await aguarde.edit_text(
+        _texto_lista_sessoes(sessoes), parse_mode="HTML",
+        reply_markup=_teclado_lista_sessoes(sessoes),
+    )
+
+
+@autorizado
+async def callback_sessext_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Atualizando...")
+    chat_id = update.effective_chat.id
+    sessoes = await asyncio.to_thread(coletar)
+    sessoes_cache[chat_id] = sessoes
+    if not sessoes:
+        await query.edit_message_text("Nenhuma sessão Claude ativa encontrada em ~/workspace agora.")
+        return
+    await query.edit_message_text(
+        _texto_lista_sessoes(sessoes), parse_mode="HTML",
+        reply_markup=_teclado_lista_sessoes(sessoes),
+    )
+
+
+@autorizado
+async def callback_sessext_voltar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    sessoes = sessoes_cache.get(chat_id) or []
+    if not sessoes:
+        await query.edit_message_text("Lista expirada. Rode /sessoes_listar de novo.")
+        return
+    await query.edit_message_text(
+        _texto_lista_sessoes(sessoes), parse_mode="HTML",
+        reply_markup=_teclado_lista_sessoes(sessoes),
+    )
+
+
+@autorizado
+async def callback_sessext_detalhe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    sessoes = sessoes_cache.get(chat_id) or []
+    try:
+        idx = int(query.data.split(":")[1])
+        s = sessoes[idx]
+    except (ValueError, IndexError):
+        await query.edit_message_text("Essa sessão não está mais na lista. Rode /sessoes_listar de novo.")
+        return
+
+    cwd = s.get("cwd") or "?"
+    onde = cwd.replace(os.path.expanduser("~"), "~")
+    texto = (
+        f"{rotulo_status(s.get('status'))} · <b>{html.escape(s.get('name') or '?')}</b>\n"
+        f"📂 {html.escape(onde)}\n"
+        f"🕒 há {ha_quanto(s)}\n\n"
+        f"{html.escape(o_que(s))}"
+    )
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✉️ Responder", callback_data=f"sessext_r:{idx}")],
+        [InlineKeyboardButton("‹ Voltar", callback_data="sessext_voltar"),
+         InlineKeyboardButton("🔄 Atualizar", callback_data="sessext_atualizar")],
+    ])
+    await query.edit_message_text(texto, parse_mode="HTML", reply_markup=teclado)
+
+
+@autorizado
+async def callback_sessext_responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    sessoes = sessoes_cache.get(chat_id) or []
+    try:
+        idx = int(query.data.split(":")[1])
+        s = sessoes[idx]
+    except (ValueError, IndexError):
+        await query.edit_message_text("Essa sessão não está mais na lista. Rode /sessoes_listar de novo.")
+        return
+
+    nome = s.get("name") or s.get("sessionId", "?")
+    resposta_pendente[chat_id] = {"nome": nome}
+    teclado = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="sessext_cancelar")]])
+    await query.edit_message_text(
+        f"✉️ Mande o texto ou a foto que quer repassar pra <b>{html.escape(nome)}</b>.\n\n"
+        "Ela vai processar como uma mensagem normal (mesmo ocupada, entra na fila). "
+        "A resposta fica só no terminal dela — aqui você recebe só a confirmação de envio.",
+        parse_mode="HTML", reply_markup=teclado,
+    )
+
+
+@autorizado
+async def callback_sessext_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    resposta_pendente.pop(update.effective_chat.id, None)
+    await query.edit_message_text("❌ Cancelado.")
+
+
+async def _repassar_para_sessao_externa(msg, chat_id, texto):
+    """Consome o pendente e despacha a mensagem — usado por texto e por foto/caption."""
+    alvo = resposta_pendente.pop(chat_id, None)
+    nome = alvo["nome"]
+    aguarde = await msg.reply_text(f"⏳ Enviando pra {nome}...")
+    ok, detalhe = await asyncio.to_thread(enviar_mensagem_peer, nome, texto)
+    if ok:
+        await aguarde.edit_text(f"✅ Mensagem entregue pra {nome}.")
+    else:
+        await aguarde.edit_text(f"⚠️ Não consegui entregar pra {nome}: {detalhe}")
+
+
+# ══════════════════════════════════════════════════════════════════════
 # MENSAGENS — TEXTO, ÁUDIO, FOTO
 # ══════════════════════════════════════════════════════════════════════
 
@@ -564,6 +711,11 @@ async def mensagem_livre(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+
+    # Fluxo: aguardando texto pra repassar a uma sessão externa (/sessoes_listar)
+    if chat_id in resposta_pendente:
+        await _repassar_para_sessao_externa(update.message, chat_id, texto)
+        return
 
     # Fluxo: aguardando resposta de gestão de users
     if await processar_user_pendente(chat_id, texto, update.message, context.bot):
@@ -656,11 +808,32 @@ async def mensagem_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mensagem_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.photo:
         return
+
+    chat_id = update.effective_chat.id
+    caption = update.message.caption or ""
+
+    # Fluxo: aguardando foto pra repassar a uma sessão externa (/sessoes_listar)
+    if chat_id in resposta_pendente:
+        try:
+            photo = update.message.photo[-1]
+            file = await photo.get_file()
+            img_name = f"telegram_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+            img_path = os.path.join(tempfile.gettempdir(), img_name)
+            await file.download_to_drive(img_path)
+            with Image.open(img_path) as img:
+                if max(img.size) > 1024:
+                    img.thumbnail((1024, 1024))
+                img.save(img_path, "JPEG", quality=80, optimize=True)
+            texto = f"[Imagem enviada pelo Telegram, em {img_path}]" + (f"\n{caption}" if caption else "")
+            await _repassar_para_sessao_externa(update.message, chat_id, texto)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro ao processar imagem: {e}")
+        return
+
     if not await exigir_projeto(update):
         return
 
-    cwd = projeto_path(update.effective_chat.id)
-    caption = update.message.caption or ""
+    cwd = projeto_path(chat_id)
 
     try:
         photo = update.message.photo[-1]
@@ -871,6 +1044,12 @@ def construir_app():
     app.add_handler(CallbackQueryHandler(callback_retomar, pattern=r"^retomar:"))
     app.add_handler(CommandHandler("users", autorizado(cmd_users)))
     app.add_handler(CallbackQueryHandler(callback_users, pattern=r"^users:"))
+    app.add_handler(CommandHandler("sessoes_listar", cmd_sessoes_listar))
+    app.add_handler(CallbackQueryHandler(callback_sessext_detalhe, pattern=r"^sessext:"))
+    app.add_handler(CallbackQueryHandler(callback_sessext_responder, pattern=r"^sessext_r:"))
+    app.add_handler(CallbackQueryHandler(callback_sessext_cancelar, pattern=r"^sessext_cancelar$"))
+    app.add_handler(CallbackQueryHandler(callback_sessext_voltar, pattern=r"^sessext_voltar$"))
+    app.add_handler(CallbackQueryHandler(callback_sessext_atualizar, pattern=r"^sessext_atualizar$"))
 
     # Comando desconhecido
     @autorizado

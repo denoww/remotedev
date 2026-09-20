@@ -54,6 +54,7 @@ BOTFATHER_COMMANDS = (
     "gitreset - Descarta todas as alteracoes locais\n"
     "ping_pc - Checa se o desktop esta ligado\n"
     "users - Gerenciar usuarios autorizados\n"
+    "sessoes_listar - Lista sessoes Claude ativas no terminal e permite responder\n"
     "menu - Exibe este menu"
 )
 
