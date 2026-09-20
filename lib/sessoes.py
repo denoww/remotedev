@@ -14,20 +14,31 @@ Duas fontes, nenhuma inventada por aqui:
                             turno de verdade (gastou tokens, respondeu, voltou pra
                             idle) e o histórico não bifurcou.
 
-O que NÃO dá: não tem eco de volta pro Telegram. Quem manda a mensagem (um
-`claude -p` descartável, sem relação com a sessão alvo) morre assim que confirma
-a entrega — a resposta da sessão-alvo fica só no terminal dela.
+A volta (o que a sessão responde) NÃO vem pelo mesmo canal: quem entrega a
+mensagem é um `claude -p` descartável que morre assim que confirma a entrega, e
+a sessão-alvo, ao tentar responder pra ele, esbarra num socket morto ("a sessão
+remotedev-xx sumiu antes de eu enviar"). Então o eco é OBSERVACIONAL: depois de
+entregar, o bot acompanha o `.jsonl` da sessão-alvo e devolve pro Telegram o que
+ela produziu naquele turno — a mensagem que ela endereçou ao remetente (mesmo
+que a entrega tenha falhado) ou, na falta dela, o que ela falou. Não depende de
+cooperação da sessão-alvo nem de ninguém ficar vivo esperando.
 """
 import os
+import re
 import glob
 import json
 import time
+import asyncio
 import subprocess
 
 from lib.config import WORKSPACE, BOT_REPO_DIR
 
 AGENTS_TIMEOUT = 10
 ENVIO_TIMEOUT = 90
+ECO_TIMEOUT = 900      # até 15 min esperando a sessão responder (ela pode estar ocupada)
+ECO_POLL = 3           # de quanto em quanto tempo reler o transcript
+ECO_SILENCIO = 12      # silêncio no transcript que sugere fim de turno (confirmado pelo status)
+ECO_MAX_CHARS = 8000   # teto do que devolvemos pro Telegram
 PROJETOS_CLAUDE_DIR = os.path.expanduser("~/.claude/projects")
 CAUDA_BYTES = 200_000  # quanto ler do fim do transcript pra resumir "o que" a sessão está fazendo
 
@@ -176,7 +187,14 @@ def ha_quanto(sessao):
     return _dur(time.time() - inicio / 1000.0)
 
 
-def enviar_mensagem_peer(nome, texto):
+NOTA_CANAL = (
+    "\n\n---\n(Mensagem vinda do Telegram do Rodrigo. Responda normalmente nesta "
+    "sessão: o bot lê a sua resposta no transcript e devolve pra ele. Não precisa "
+    "SendMessage de volta — quem entregou isto foi um processo efêmero, que já morreu.)"
+)
+
+
+def enviar_mensagem_peer(nome, texto, nota=True):
     """Dispara um `claude -p` descartável que só chama SendMessage(to=nome, message=texto).
 
     Não é resume da sessão alvo nem toca no `.jsonl` dela diretamente — é outra
@@ -185,6 +203,8 @@ def enviar_mensagem_peer(nome, texto):
     mensagem de outra pessoa, processa quando puder, e o dono continua livre pra
     usar o terminal dela a qualquer momento.
     """
+    if nota:
+        texto = texto + NOTA_CANAL
     instrucao = (
         f"Chame a ferramenta SendMessage uma única vez com to={json.dumps(nome)} e "
         f"message={json.dumps(texto)}. Não faça mais nada além disso — não leia "
@@ -203,3 +223,138 @@ def enviar_mensagem_peer(nome, texto):
     if dados.get("is_error"):
         return False, dados.get("result") or res.stderr.strip() or "erro desconhecido"
     return True, dados.get("result") or "enviado"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Eco da resposta: acompanha o transcript da sessão-alvo depois do envio
+# ─────────────────────────────────────────────────────────────────────
+
+_RE_PEER = re.compile(r'<cross-session-message from="([^"]*)" from-name="([^"]*)"')
+
+
+def offset_transcript(session_id):
+    """Onde o transcript da sessão está AGORA — marco pra só olhar o que vier depois."""
+    path = _transcript(session_id)
+    if not path:
+        return None, 0
+    try:
+        return path, os.path.getsize(path)
+    except OSError:
+        return path, 0
+
+
+def _ler_desde(path, offset):
+    """Entradas completas gravadas depois de `offset`. Linha pela metade fica pra próxima."""
+    try:
+        tam = os.path.getsize(path)
+    except OSError:
+        return [], offset
+    if tam < offset:  # transcript recomeçou
+        offset = 0
+    if tam == offset:
+        return [], offset
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            bruto = f.read(tam - offset)
+    except OSError:
+        return [], offset
+    corte = bruto.rfind(b"\n")
+    if corte == -1:
+        return [], offset  # só tem linha incompleta; espera terminar de escrever
+    consumido = bruto[:corte + 1]
+    entradas = []
+    for linha in consumido.split(b"\n"):
+        if linha.strip():
+            try:
+                entradas.append(json.loads(linha))
+            except ValueError:
+                pass
+    return entradas, offset + len(consumido)
+
+
+def _texto_bruto(conteudo):
+    if isinstance(conteudo, str):
+        return conteudo
+    if isinstance(conteudo, list):
+        return json.dumps(conteudo, ensure_ascii=False)
+    return ""
+
+
+def _e_nossa_entrega(bruto, texto_enviado, from_name):
+    """A mensagem que acabou de chegar na sessão é a que ACABAMOS de mandar?"""
+    assinatura = " ".join((texto_enviado or "").split())[:80]
+    if assinatura and assinatura in " ".join(bruto.split()):
+        return True
+    # A entrega sai de um `claude -p` rodando no diretório do bot, então o nome
+    # dele começa com "remotedev-". Rede de segurança pra texto reformatado.
+    return from_name.startswith(os.path.basename(BOT_REPO_DIR) + "-")
+
+
+def _ainda_ocupada(nome):
+    """Sessão segue trabalhando? Se sumiu da lista (morreu), não está."""
+    for s in listar_peers(so_workspace=False):
+        if s.get("name") == nome:
+            return s.get("status") == "busy"
+    return False
+
+
+async def aguardar_resposta(session_id, nome, texto_enviado, path, offset,
+                            timeout=ECO_TIMEOUT, silencio=ECO_SILENCIO):
+    """
+    Espera a sessão-alvo processar a mensagem e devolve o texto da resposta dela.
+
+    Prefere o que ela endereçou ao remetente (o SendMessage de volta, que morre no
+    socket efêmero mas cujo conteúdo está no transcript); na falta, o que ela falou
+    no turno. `None` se nada vier dentro do timeout.
+    """
+    if not path:
+        return None
+
+    limite = time.time() + timeout
+    ultima_novidade = time.time()
+    chegou = False
+    remetente = set()
+    falas, enderecadas = [], []
+
+    while time.time() < limite:
+        await asyncio.sleep(ECO_POLL)
+        entradas, offset = await asyncio.to_thread(_ler_desde, path, offset)
+        if entradas:
+            ultima_novidade = time.time()
+
+        for e in entradas:
+            if e.get("isSidechain"):  # subagente não é a conversa principal
+                continue
+            msg = e.get("message") or {}
+            bruto = _texto_bruto(msg.get("content"))
+            tipo = e.get("type")
+
+            if tipo == "user":
+                m = _RE_PEER.search(bruto)
+                if m and _e_nossa_entrega(bruto, texto_enviado, m.group(2)):
+                    # nossa mensagem entrou na sessão: o turno dela começa aqui
+                    chegou = True
+                    remetente = {m.group(1), m.group(2)}
+                    falas, enderecadas = [], []
+                continue
+
+            if not chegou or tipo != "assistant":
+                continue
+            for b in (msg.get("content") or []):
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and (b.get("text") or "").strip():
+                    falas.append(b["text"].strip())
+                elif b.get("type") == "tool_use" and b.get("name") == "SendMessage":
+                    entrada = b.get("input") or {}
+                    if entrada.get("to") in remetente and (entrada.get("message") or "").strip():
+                        enderecadas.append(entrada["message"].strip())
+
+        if chegou and (falas or enderecadas) and time.time() - ultima_novidade >= silencio:
+            if await asyncio.to_thread(_ainda_ocupada, nome):
+                continue  # calou porque está numa tool longa, não porque terminou
+            break
+
+    resposta = "\n\n".join(enderecadas or falas).strip()
+    return resposta[:ECO_MAX_CHARS] or None

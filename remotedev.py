@@ -50,7 +50,7 @@ from lib.claude import (
     enviar_para_claude, rodar_claude_completo,
     carregar_modelo, salvar_modelo,
     claude_em_execucao, bots_com_claude_rodando, limpar_sessao,
-    limpar_todas_sessoes, recuperar_interrompidas,
+    limpar_todas_sessoes, recuperar_interrompidas, quebrar_para_telegram,
 )
 from lib.git_ops import (
     cmd_diff, cmd_push, cmd_gitbranch, cmd_gitpull, cmd_gitreset,
@@ -68,7 +68,7 @@ from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exc
 from lib.media_groups import adicionar_ao_grupo_ou_processar
 from lib.sessoes import (
     sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, ha_quanto,
-    enviar_mensagem_peer,
+    enviar_mensagem_peer, offset_transcript, aguardar_resposta, ECO_TIMEOUT,
 )
 
 
@@ -670,12 +670,12 @@ async def callback_sessext_responder(update: Update, context: ContextTypes.DEFAU
         return
 
     nome = s.get("name") or s.get("sessionId", "?")
-    resposta_pendente[chat_id] = {"nome": nome}
+    resposta_pendente[chat_id] = {"nome": nome, "session_id": s.get("sessionId")}
     teclado = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="sessext_cancelar")]])
     await query.edit_message_text(
         f"✉️ Mande o texto ou a foto que quer repassar pra <b>{html.escape(nome)}</b>.\n\n"
-        "Ela vai processar como uma mensagem normal (mesmo ocupada, entra na fila). "
-        "A resposta fica só no terminal dela — aqui você recebe só a confirmação de envio.",
+        "Ela vai processar como uma mensagem normal (mesmo ocupada, entra na fila) "
+        "e a resposta dela volta aqui assim que o turno terminar.",
         parse_mode="HTML", reply_markup=teclado,
     )
 
@@ -692,12 +692,53 @@ async def _repassar_para_sessao_externa(msg, chat_id, texto):
     """Consome o pendente e despacha a mensagem — usado por texto e por foto/caption."""
     alvo = resposta_pendente.pop(chat_id, None)
     nome = alvo["nome"]
+    session_id = alvo.get("session_id")
     aguarde = await msg.reply_text(f"⏳ Enviando pra {nome}...")
+
+    # Marca onde o transcript dela está ANTES do envio: o que vier depois é resposta.
+    path, offset = (None, 0)
+    if session_id:
+        path, offset = await asyncio.to_thread(offset_transcript, session_id)
+
     ok, detalhe = await asyncio.to_thread(enviar_mensagem_peer, nome, texto)
-    if ok:
-        await aguarde.edit_text(f"✅ Mensagem entregue pra {nome}.")
-    else:
+    if not ok:
         await aguarde.edit_text(f"⚠️ Não consegui entregar pra {nome}: {detalhe}")
+        return
+
+    if not path:
+        await aguarde.edit_text(f"✅ Mensagem entregue pra {nome}.\n"
+                                "(Não achei o transcript dela — a resposta fica só no terminal.)")
+        return
+
+    await aguarde.edit_text(f"✅ Entregue pra {nome}. Aguardando a resposta dela...")
+    asyncio.create_task(_ecoar_resposta_sessao(msg, nome, session_id, texto, path, offset))
+
+
+async def _ecoar_resposta_sessao(msg, nome, session_id, texto, path, offset):
+    """Acompanha o transcript da sessão-alvo e traz a resposta dela pro Telegram."""
+    try:
+        resposta = await aguardar_resposta(session_id, nome, texto, path, offset)
+    except Exception as e:
+        print(f"[sessoes] eco da resposta de {nome} falhou: {e}")
+        await msg.reply_text(f"⚠️ Perdi a resposta de {nome} no caminho: {e}")
+        return
+
+    if not resposta:
+        await msg.reply_text(
+            f"⌛ {nome} não respondeu em {ECO_TIMEOUT // 60} min. "
+            "Ela pode responder depois — veja com /sessoes_listar."
+        )
+        return
+
+    # Folga no limite: o cabeçalho e o escape de HTML (& vira &amp;) incham o pedaço.
+    try:
+        for i, pedaco in enumerate(quebrar_para_telegram(resposta, limite=3000)):
+            corpo = html.escape(pedaco)
+            if i == 0:
+                corpo = f"💬 <b>{html.escape(nome)}</b>\n\n{corpo}"
+            await msg.reply_text(corpo, parse_mode="HTML")
+    except Exception as e:
+        print(f"[sessoes] não consegui entregar a resposta de {nome} no Telegram: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════
