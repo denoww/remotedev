@@ -82,6 +82,22 @@ def _uma_linha(texto, limite=300):
     return " ".join((texto or "").split())[:limite]
 
 
+# O detalhe da sessão mostra a última fala inteira. Antes tudo passava por
+# _uma_linha e cortava em 300 chars, e o texto chegava pela metade ("O teste com
+# teclado real fica para o de"). O que passa do limite de uma mensagem do
+# Telegram o bot manda em mensagens seguidas; este teto só segura falas absurdas.
+FALA_MAX_CHARS = 20000
+
+
+def _texto_preservado(texto, limite=FALA_MAX_CHARS):
+    """Mantém parágrafos e quebras; só apara espaço sobrando e limita o tamanho."""
+    linhas = [l.rstrip() for l in (texto or "").strip().splitlines()]
+    limpo = re.sub(r"\n{3,}", "\n\n", "\n".join(linhas))
+    if len(limpo) > limite:
+        limpo = limpo[:limite].rstrip() + "…"
+    return limpo
+
+
 def _transcript(session_id):
     achados = glob.glob(os.path.join(PROJETOS_CLAUDE_DIR, "*", f"{session_id}.jsonl"))
     return achados[0] if achados else None
@@ -137,13 +153,13 @@ def _resumo_transcript(session_id):
                 elif b.get("type") == "text" and humano:
                     t = (b.get("text") or "").strip()
                     if t and not t.startswith("<"):
-                        ultimo_pedido, ultima_fala = _uma_linha(t), None
+                        ultimo_pedido, ultima_fala = _texto_preservado(t), None
         elif tipo == "assistant":
             for b in blocos:
                 if not isinstance(b, dict):
                     continue
                 if b.get("type") == "text" and (b.get("text") or "").strip():
-                    ultima_fala = _uma_linha(b["text"])
+                    ultima_fala = _texto_preservado(b["text"])
                 elif b.get("type") == "tool_use":
                     tool_pendente = b.get("name")
     return {"ultimo_pedido": ultimo_pedido, "ultima_fala": ultima_fala, "tool_pendente": tool_pendente}

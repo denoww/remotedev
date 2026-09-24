@@ -642,18 +642,31 @@ async def callback_sessext_detalhe(update: Update, context: ContextTypes.DEFAULT
 
     cwd = s.get("cwd") or "?"
     onde = cwd.replace(os.path.expanduser("~"), "~")
-    texto = (
+    cabecalho = (
         f"{rotulo_status(s.get('status'))} · <b>{html.escape(s.get('name') or '?')}</b>\n"
         f"📂 {html.escape(onde)}\n"
         f"🕒 há {ha_quanto(s)}\n\n"
-        f"{html.escape(o_que(s))}"
     )
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✉️ Responder", callback_data=f"sessext_r:{idx}")],
         [InlineKeyboardButton("‹ Voltar", callback_data="sessext_voltar"),
          InlineKeyboardButton("🔄 Atualizar", callback_data="sessext_atualizar")],
     ])
-    await query.edit_message_text(texto, parse_mode="HTML", reply_markup=teclado)
+
+    # Fala longa não cabe numa mensagem: a primeira edita a do botão, o resto vai em
+    # mensagens novas, e os botões ficam na ÚLTIMA (é onde o dedo está). Divide o
+    # texto cru e escapa cada pedaço, pra não cortar uma entidade (&amp;) no meio.
+    pedacos = quebrar_para_telegram(o_que(s), limite=3000)
+    ultimo = len(pedacos) - 1
+    primeiro = cabecalho + html.escape(pedacos[0])
+    await query.edit_message_text(
+        primeiro, parse_mode="HTML", reply_markup=teclado if ultimo == 0 else None,
+    )
+    for i, pedaco in enumerate(pedacos[1:], start=1):
+        await query.message.reply_text(
+            html.escape(pedaco), parse_mode="HTML",
+            reply_markup=teclado if i == ultimo else None,
+        )
 
 
 @autorizado
