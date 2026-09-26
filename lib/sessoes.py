@@ -47,7 +47,8 @@ sessoes_cache = {}
 # chat_id → {"nome": ...} sessão escolhida aguardando a próxima mensagem (texto/foto) pra repassar
 resposta_pendente = {}
 
-_ROTULO_STATUS = {"idle": "💤 parada", "busy": "⚙️ trabalhando", "shell": "🐚 no shell"}
+_ROTULO_STATUS = {"idle": "💤 parada", "busy": "⚙️ trabalhando", "shell": "🐚 no shell",
+                   "waiting": "🖐️ esperando você"}
 
 
 def _do_workspace(cwd):
@@ -125,6 +126,15 @@ def _ler_cauda_json(path, tam_max=CAUDA_BYTES):
     return saida
 
 
+def _ultima_atividade(session_id):
+    """Epoch da última gravação no transcript da sessão (0 se não achar)."""
+    path = _transcript(session_id)
+    try:
+        return os.path.getmtime(path) if path else 0.0
+    except OSError:
+        return 0.0
+
+
 def _resumo_transcript(session_id):
     """Do fim do transcript: último pedido humano, última fala do Claude, tool pendente."""
     path = _transcript(session_id)
@@ -169,9 +179,15 @@ def coletar(so_workspace=True):
     """Sessões vivas + resumo do que cada uma está fazendo, prontas pra exibir."""
     saida = []
     for s in listar_peers(so_workspace=so_workspace):
-        saida.append({**s, **_resumo_transcript(s.get("sessionId", ""))})
-    ordem = {"idle": 0, "busy": 1, "shell": 2}
-    saida.sort(key=lambda s: ordem.get(s.get("status"), 1))
+        saida.append({**s, **_resumo_transcript(s.get("sessionId", "")),
+                      "ultima_atividade": _ultima_atividade(s.get("sessionId", ""))})
+    # Quem está trabalhando agora vem primeiro; depois as paradas, das que
+    # trabalharam há pouco pras que dormem há dias (o transcript só é escrito
+    # quando a sessão faz algo, então o mtime dele é o "trabalhou por último").
+    # No shell (sessão largada num prompt) vai pro fim. Dentro de cada grupo,
+    # a atividade mais recente sobe.
+    grupo = {"busy": 0, "idle": 1, "shell": 2}
+    saida.sort(key=lambda s: (grupo.get(s.get("status"), 1), -s["ultima_atividade"]))
     return saida
 
 
@@ -194,6 +210,14 @@ def _dur(segundos):
     if segundos < 86400:
         return f"{segundos // 3600}h{(segundos % 3600) // 60:02d}"
     return f"{segundos // 86400}d"
+
+
+def ha_atividade(sessao):
+    """Há quanto tempo a sessão mexeu no transcript pela última vez."""
+    ultima = sessao.get("ultima_atividade")
+    if not ultima:
+        return "?"
+    return _dur(time.time() - ultima)
 
 
 def ha_quanto(sessao):

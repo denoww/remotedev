@@ -67,7 +67,7 @@ from lib.novo_projeto import (
 from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exclusao, callback_excluir
 from lib.media_groups import adicionar_ao_grupo_ou_processar
 from lib.sessoes import (
-    sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, ha_quanto,
+    sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, ha_quanto, ha_atividade,
     enviar_mensagem_peer, offset_transcript, aguardar_resposta, ECO_TIMEOUT,
 )
 
@@ -566,7 +566,7 @@ async def cmd_restart_todos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════════════════════════
 
 def _texto_lista_sessoes(sessoes):
-    linhas = [f"{rotulo_status(s.get('status'))} · <b>{html.escape(s.get('name') or '?')}</b> · há {ha_quanto(s)}"
+    linhas = [f"{rotulo_status(s.get('status'))} · <b>{html.escape(s.get('name') or '?')}</b> · {ha_atividade(s)}"
               for s in sessoes]
     return f"🖥️ <b>{len(sessoes)} sessão(ões) ativa(s)</b> em ~/workspace:\n\n" + "\n".join(linhas)
 
@@ -645,7 +645,7 @@ async def callback_sessext_detalhe(update: Update, context: ContextTypes.DEFAULT
     cabecalho = (
         f"{rotulo_status(s.get('status'))} · <b>{html.escape(s.get('name') or '?')}</b>\n"
         f"📂 {html.escape(onde)}\n"
-        f"🕒 há {ha_quanto(s)}\n\n"
+        f"🕒 ativa há {ha_atividade(s)} (aberta há {ha_quanto(s)})\n\n"
     )
     teclado = InlineKeyboardMarkup([
         [InlineKeyboardButton("✉️ Responder", callback_data=f"sessext_r:{idx}")],
