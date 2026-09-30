@@ -141,6 +141,7 @@ def _resumo_transcript(session_id):
     if not path:
         return {}
     ultimo_pedido = ultima_fala = tool_pendente = None
+    tool_pendente_input = None
     for entrada in _ler_cauda_json(path):
         if entrada.get("isSidechain"):  # subagente — não é a conversa principal
             continue
@@ -159,7 +160,7 @@ def _resumo_transcript(session_id):
                 if not isinstance(b, dict):
                     continue
                 if b.get("type") == "tool_result":
-                    tool_pendente = None
+                    tool_pendente = tool_pendente_input = None
                 elif b.get("type") == "text" and humano:
                     t = (b.get("text") or "").strip()
                     if t and not t.startswith("<"):
@@ -172,21 +173,50 @@ def _resumo_transcript(session_id):
                     ultima_fala = _texto_preservado(b["text"])
                 elif b.get("type") == "tool_use":
                     tool_pendente = b.get("name")
-    return {"ultimo_pedido": ultimo_pedido, "ultima_fala": ultima_fala, "tool_pendente": tool_pendente}
+                    tool_pendente_input = b.get("input") if isinstance(b.get("input"), dict) else None
+    return {"ultimo_pedido": ultimo_pedido, "ultima_fala": ultima_fala,
+            "tool_pendente": tool_pendente, "tool_pendente_input": tool_pendente_input}
+
+
+# Cada sessão viva grava ~/.claude/sessions/<pid>.json. Quem foi aberta com
+# `--remote-control` (o `sc claude new` abre assim) ganha ali um `bridgeSessionId`:
+# é o id dela no Remote Control, e `https://claude.ai/code/<id>` abre a sessão no
+# app/navegador — onde dá pra APROVAR plano e permissão, coisa que mensagem não faz.
+SESSOES_DIR = os.path.expanduser("~/.claude/sessions")
+
+
+def _dados_da_sessao(pid):
+    if not pid:
+        return {}
+    try:
+        with open(os.path.join(SESSOES_DIR, f"{int(pid)}.json")) as f:
+            dados = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return {}
+    return dados if isinstance(dados, dict) else {}
+
+
+def link_remote_control(sessao):
+    bridge = sessao.get("bridgeSessionId")
+    return f"https://claude.ai/code/{bridge}" if bridge else None
 
 
 def coletar(so_workspace=True):
     """Sessões vivas + resumo do que cada uma está fazendo, prontas pra exibir."""
     saida = []
     for s in listar_peers(so_workspace=so_workspace):
+        extra = _dados_da_sessao(s.get("pid"))
         saida.append({**s, **_resumo_transcript(s.get("sessionId", "")),
-                      "ultima_atividade": _ultima_atividade(s.get("sessionId", ""))})
+                      "ultima_atividade": _ultima_atividade(s.get("sessionId", "")),
+                      "bridgeSessionId": extra.get("bridgeSessionId"),
+                      "waitingFor": s.get("waitingFor") or extra.get("waitingFor")})
     # Quem está trabalhando agora vem primeiro; depois as paradas, das que
     # trabalharam há pouco pras que dormem há dias (o transcript só é escrito
     # quando a sessão faz algo, então o mtime dele é o "trabalhou por último").
     # No shell (sessão largada num prompt) vai pro fim. Dentro de cada grupo,
-    # a atividade mais recente sobe.
-    grupo = {"busy": 0, "idle": 1, "shell": 2}
+    # a atividade mais recente sobe. Esperando você (plano/permissão/pergunta)
+    # vem ANTES de tudo: é a única que está parada por sua causa.
+    grupo = {"waiting": -1, "busy": 0, "idle": 1, "shell": 2}
     saida.sort(key=lambda s: (grupo.get(s.get("status"), 1), -s["ultima_atividade"]))
     return saida
 
@@ -195,7 +225,37 @@ def rotulo_status(status):
     return _ROTULO_STATUS.get(status, status or "?")
 
 
+def o_que_espera(sessao):
+    """Quando a sessão está `waiting`: O QUE ela espera, em texto legível.
+
+    A última fala do transcript NÃO serve aqui — é a frase de antes de ela parar
+    ("antes de responder, levanto dois dados…"), que não diz o que falta. O que
+    diz é a tool que ficou sem resultado: o plano, a pergunta, o comando.
+    """
+    tool = sessao.get("tool_pendente")
+    entrada = sessao.get("tool_pendente_input") or {}
+    if tool == "ExitPlanMode":
+        plano = (entrada.get("plan") or "").strip()
+        return "📋 Propôs um plano e está esperando você APROVAR:\n\n" + (plano or "(plano sem texto)")
+    if tool == "AskUserQuestion":
+        linhas = ["❓ Está te fazendo uma pergunta:"]
+        for q in entrada.get("questions") or []:
+            linhas.append(f"\n{q.get('question') or q.get('header') or '?'}")
+            for op in q.get("options") or []:
+                desc = f" — {op.get('description')}" if op.get("description") else ""
+                linhas.append(f"• {op.get('label')}{desc}")
+        return "\n".join(linhas)
+    motivo = sessao.get("waitingFor") or "uma resposta"
+    if tool:
+        detalhe = entrada.get("command") or entrada.get("file_path") or entrada.get("description") or ""
+        detalhe = f"\n\n{detalhe}" if detalhe else ""
+        return f"✋ Esperando você liberar {tool} ({motivo}).{detalhe}"
+    return f"✋ Esperando você ({motivo})."
+
+
 def o_que(sessao):
+    if sessao.get("status") == "waiting":
+        return o_que_espera(sessao)
     if sessao.get("tool_pendente") and sessao.get("status") == "busy":
         return f"🔧 {sessao['tool_pendente']}"
     return sessao.get("ultima_fala") or sessao.get("ultimo_pedido") or "sessão nova, sem conversa"

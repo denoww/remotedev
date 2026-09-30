@@ -67,7 +67,7 @@ from lib.novo_projeto import (
 from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exclusao, callback_excluir
 from lib.media_groups import adicionar_ao_grupo_ou_processar
 from lib.sessoes import (
-    sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, ha_quanto, ha_atividade,
+    sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, link_remote_control, ha_quanto, ha_atividade,
     enviar_mensagem_peer, offset_transcript, aguardar_resposta, ECO_TIMEOUT,
 )
 
@@ -647,11 +647,25 @@ async def callback_sessext_detalhe(update: Update, context: ContextTypes.DEFAULT
         f"📂 {html.escape(onde)}\n"
         f"🕒 ativa há {ha_atividade(s)} (aberta há {ha_quanto(s)})\n\n"
     )
-    teclado = InlineKeyboardMarkup([
+    linhas_teclado = [
         [InlineKeyboardButton("✉️ Responder", callback_data=f"sessext_r:{idx}")],
         [InlineKeyboardButton("‹ Voltar", callback_data="sessext_voltar"),
          InlineKeyboardButton("🔄 Atualizar", callback_data="sessext_atualizar")],
-    ])
+    ]
+    # Plano/permissão/pergunta pendente é uma tela do TERMINAL: mensagem não a
+    # responde (fica na fila atrás dela). O Remote Control abre a mesma tela no
+    # app do Claude, com Aceitar/Rejeitar — é o que destrava de longe.
+    link = link_remote_control(s)
+    if s.get("status") == "waiting":
+        if link:
+            linhas_teclado.insert(0, [InlineKeyboardButton("📱 Aprovar no app Claude", url=link)])
+            cabecalho += "O ✉️ Responder não destrava esta espera — use 📱 Aprovar no app Claude.\n\n"
+        else:
+            cabecalho += ("Esta espera só se resolve no terminal: a sessão não foi aberta com "
+                          "--remote-control (abra novas com <code>sc claude new</code>).\n\n")
+    elif link:
+        linhas_teclado.append([InlineKeyboardButton("📱 Abrir no app Claude", url=link)])
+    teclado = InlineKeyboardMarkup(linhas_teclado)
 
     # Fala longa não cabe numa mensagem: a primeira edita a do botão, o resto vai em
     # mensagens novas, e os botões ficam na ÚLTIMA (é onde o dedo está). Divide o
