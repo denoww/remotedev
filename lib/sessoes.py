@@ -400,7 +400,7 @@ def _ainda_ocupada(nome):
 
 
 async def aguardar_resposta(session_id, nome, texto_enviado, path, offset,
-                            timeout=ECO_TIMEOUT, silencio=ECO_SILENCIO):
+                            timeout=ECO_TIMEOUT, silencio=ECO_SILENCIO, digitado=False):
     """
     Espera a sessão-alvo processar a mensagem e devolve o texto da resposta dela.
 
@@ -431,6 +431,13 @@ async def aguardar_resposta(session_id, nome, texto_enviado, path, offset,
             tipo = e.get("type")
 
             if tipo == "user":
+                if digitado:
+                    # entrega pelo agente pcmux: chega como prompt DIGITADO, não como cross-session-message
+                    assin = " ".join((texto_enviado or "").split())[:80]
+                    if assin and assin in " ".join(bruto.split()):
+                        chegou = True
+                        falas, enderecadas = [], []
+                    continue
                 m = _RE_PEER.search(bruto)
                 if m and _e_nossa_entrega(bruto, texto_enviado, m.group(2)):
                     # nossa mensagem entrou na sessão: o turno dela começa aqui

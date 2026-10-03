@@ -66,6 +66,7 @@ from lib.novo_projeto import (
 )
 from lib.excluir_projeto import callback_excluir_projeto, callback_confirmar_exclusao, callback_excluir
 from lib.media_groups import adicionar_ao_grupo_ou_processar
+from lib import pcmux_agent
 from lib.sessoes import (
     sessoes_cache, resposta_pendente, coletar, rotulo_status, o_que, link_remote_control, ha_quanto, ha_atividade,
     enviar_mensagem_peer, offset_transcript, aguardar_resposta, ECO_TIMEOUT,
@@ -656,7 +657,17 @@ async def callback_sessext_detalhe(update: Update, context: ContextTypes.DEFAULT
     # responde (fica na fila atrás dela). O Remote Control abre a mesma tela no
     # app do Claude, com Aceitar/Rejeitar — é o que destrava de longe.
     link = link_remote_control(s)
-    if s.get("status") == "waiting":
+    if s.get("status") == "waiting" and await asyncio.to_thread(_precisa_acao, s.get("sessionId")):
+        # agente pcmux: dá para aprovar daqui mesmo (envia a tecla e mostra a tela)
+        linhas_teclado.insert(0, [
+            InlineKeyboardButton("1 ✅", callback_data=f"sessext_k:{idx}:1"),
+            InlineKeyboardButton("2", callback_data=f"sessext_k:{idx}:2"),
+            InlineKeyboardButton("3", callback_data=f"sessext_k:{idx}:3"),
+            InlineKeyboardButton("⏎", callback_data=f"sessext_k:{idx}:Enter"),
+            InlineKeyboardButton("Esc", callback_data=f"sessext_k:{idx}:Escape"),
+        ])
+        cabecalho += "Pede ação: toque numa tecla (a tela atual volta aqui).\n\n"
+    elif s.get("status") == "waiting":
         if link:
             linhas_teclado.insert(0, [InlineKeyboardButton("📱 Aprovar no app Claude", url=link)])
             cabecalho += "O ✉️ Responder não destrava esta espera — use 📱 Aprovar no app Claude.\n\n"
@@ -715,6 +726,54 @@ async def callback_sessext_cancelar(update: Update, context: ContextTypes.DEFAUL
     await query.edit_message_text("❌ Cancelado.")
 
 
+def _janela_pcmux(session_id):
+    """Janela tmux (claude:N) da sessão neste PC, segundo o agente pcmux; None = fora do tmux/agente indisponível."""
+    ok, ss = pcmux_agent.listar()
+    if not ok:
+        return None
+    for x in ss:
+        if x.get("sid") == session_id and x.get("janela"):
+            return x["janela"]
+    return None
+
+
+def _precisa_acao(session_id):
+    ok, ss = pcmux_agent.listar()
+    if not ok:
+        return None
+    for x in ss:
+        if x.get("sid") == session_id and x.get("janela") and x.get("estado") == "precisa":
+            return x["janela"]
+    return None
+
+
+@autorizado
+async def callback_sessext_tecla(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botões de aprovar/escolher numa sessão que pede ação (permissão/pergunta) — via agente pcmux."""
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    sessoes = sessoes_cache.get(chat_id) or []
+    try:
+        _, i, tecla = query.data.split(":")
+        s = sessoes[int(i)]
+    except (ValueError, IndexError):
+        await query.answer("Essa sessão não está mais na lista.", show_alert=True)
+        return
+    if tecla not in pcmux_agent.TECLAS:
+        await query.answer("Tecla inválida.", show_alert=True)
+        return
+    janela = await asyncio.to_thread(_precisa_acao, s.get("sessionId"))
+    if not janela:
+        await query.answer("Essa sessão não está pedindo ação agora.", show_alert=True)
+        return
+    ok, detalhe = await asyncio.to_thread(pcmux_agent.tecla, janela, tecla)
+    await query.answer("Enviado ✅" if ok else f"Falhou: {detalhe}", show_alert=not ok)
+    if ok:
+        ok2, prev = await asyncio.to_thread(pcmux_agent.previa, janela)
+        if ok2:
+            await query.message.reply_text("🖥️ Tela agora:\n<pre>" + html.escape(prev[-1500:]) + "</pre>", parse_mode="HTML")
+
+
 async def _repassar_para_sessao_externa(msg, chat_id, texto):
     """Consome o pendente e despacha a mensagem — usado por texto e por foto/caption."""
     alvo = resposta_pendente.pop(chat_id, None)
@@ -727,7 +786,17 @@ async def _repassar_para_sessao_externa(msg, chat_id, texto):
     if session_id:
         path, offset = await asyncio.to_thread(offset_transcript, session_id)
 
-    ok, detalhe = await asyncio.to_thread(enviar_mensagem_peer, nome, texto)
+    # 1º caminho: agente pcmux (send-keys na janela do tmux — instantâneo, sem modelo, sem prefixo no texto).
+    # Reserva: SendMessage (sessão fora do tmux ou agente indisponível).
+    digitado = False
+    janela = await asyncio.to_thread(_janela_pcmux, session_id) if session_id else None
+    if janela:
+        ok, detalhe = await asyncio.to_thread(pcmux_agent.enviar, janela, texto)
+        digitado = ok
+        if not ok:
+            print(f"[sessoes] agente pcmux falhou ({detalhe}); usando SendMessage")
+    if not digitado:
+        ok, detalhe = await asyncio.to_thread(enviar_mensagem_peer, nome, texto)
     if not ok:
         await aguarde.edit_text(f"⚠️ Não consegui entregar pra {nome}: {detalhe}")
         return
@@ -738,13 +807,13 @@ async def _repassar_para_sessao_externa(msg, chat_id, texto):
         return
 
     await aguarde.edit_text(f"✅ Entregue pra {nome}. Aguardando a resposta dela...")
-    asyncio.create_task(_ecoar_resposta_sessao(msg, nome, session_id, texto, path, offset))
+    asyncio.create_task(_ecoar_resposta_sessao(msg, nome, session_id, texto, path, offset, digitado))
 
 
-async def _ecoar_resposta_sessao(msg, nome, session_id, texto, path, offset):
+async def _ecoar_resposta_sessao(msg, nome, session_id, texto, path, offset, digitado=False):
     """Acompanha o transcript da sessão-alvo e traz a resposta dela pro Telegram."""
     try:
-        resposta = await aguardar_resposta(session_id, nome, texto, path, offset)
+        resposta = await aguardar_resposta(session_id, nome, texto, path, offset, digitado=digitado)
     except Exception as e:
         print(f"[sessoes] eco da resposta de {nome} falhou: {e}")
         await msg.reply_text(f"⚠️ Perdi a resposta de {nome} no caminho: {e}")
@@ -1113,6 +1182,7 @@ def construir_app():
     app.add_handler(CommandHandler("users", autorizado(cmd_users)))
     app.add_handler(CallbackQueryHandler(callback_users, pattern=r"^users:"))
     app.add_handler(CommandHandler("sessoes_listar", cmd_sessoes_listar))
+    app.add_handler(CallbackQueryHandler(callback_sessext_tecla, pattern=r"^sessext_k:"))
     app.add_handler(CallbackQueryHandler(callback_sessext_detalhe, pattern=r"^sessext:"))
     app.add_handler(CallbackQueryHandler(callback_sessext_responder, pattern=r"^sessext_r:"))
     app.add_handler(CallbackQueryHandler(callback_sessext_cancelar, pattern=r"^sessext_cancelar$"))
